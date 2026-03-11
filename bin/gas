@@ -23,6 +23,8 @@ BUILD_GO_TARGET=""
 BUILD_NODE_VERSION=""
 BUILD_NPM_VERSION=""
 BUILD_GO_VERSION=""
+GO_DETECTED_PORT=""
+GO_SHOULD_UPDATE_ENV=0
 
 log_info() {
   printf '[%s] %s\n' "$CLI_NAME" "$*" >&2
@@ -256,7 +258,7 @@ upsert_env_port() {
 }
 
 collect_type_candidates() {
-  local candidates=()
+  local -a candidates=()
   local has_go=0
   local has_svelte=0
 
@@ -264,8 +266,9 @@ collect_type_candidates() {
     has_go=1
   fi
 
+  local -a cmd_targets=()
   shopt -s nullglob
-  local cmd_targets=("$PROJECT_DIR"/cmd/*/main.go)
+  cmd_targets=("$PROJECT_DIR"/cmd/*/main.go)
   shopt -u nullglob
   if (( ${#cmd_targets[@]} > 0 )); then
     has_go=1
@@ -287,7 +290,12 @@ collect_type_candidates() {
     candidates+=("svelte")
   fi
 
-  printf '%s\n' "${candidates[@]}"
+  if (( ${#candidates[@]} > 0 )); then
+    local item=""
+    for item in "${candidates[@]}"; do
+      printf '%s\n' "$item"
+    done
+  fi
 }
 
 resolve_build_type() {
@@ -298,7 +306,7 @@ resolve_build_type() {
     esac
   fi
 
-  local candidates=()
+  local -a candidates=()
   while IFS= read -r line; do
     [[ -n "$line" ]] && candidates+=("$line")
   done < <(collect_type_candidates)
@@ -332,7 +340,9 @@ maybe_git_pull() {
       BUILD_GIT_PULL="no"
     fi
   fi
+}
 
+execute_git_pull_if_needed() {
   if [[ "$BUILD_GIT_PULL" == "yes" ]]; then
     require_command git "git tidak ditemukan. Install git dulu."
     log_info "Menjalankan git pull..."
@@ -367,6 +377,8 @@ resolve_go_port_and_env() {
   local detected_port="${detected%%;*}"
   local env_file="${detected#*;}"
   BUILD_ENV_FILE="$env_file"
+  GO_DETECTED_PORT="$detected_port"
+  GO_SHOULD_UPDATE_ENV=0
 
   if [[ -n "$BUILD_PORT" ]]; then
     validate_port "$BUILD_PORT" || die "Port tidak valid: $BUILD_PORT"
@@ -394,35 +406,42 @@ resolve_go_port_and_env() {
 
   validate_port "$BUILD_PORT" || die "Port tidak valid: $BUILD_PORT"
 
-  if [[ "$BUILD_PORT" != "$detected_port" ]]; then
-    upsert_env_port "$env_file" "$BUILD_PORT"
-    log_info "PORT disimpan ke $(basename "$env_file"): $BUILD_PORT"
+  if [[ "$BUILD_PORT" != "$GO_DETECTED_PORT" ]]; then
+    GO_SHOULD_UPDATE_ENV=1
   fi
 }
 
 collect_go_targets() {
-  local targets=()
+  local -a targets=()
 
   if [[ -f "$PROJECT_DIR/main.go" ]]; then
     targets+=("./")
   fi
 
+  local -a files=()
   shopt -s nullglob
-  local files=("$PROJECT_DIR"/cmd/*/main.go)
+  files=("$PROJECT_DIR"/cmd/*/main.go)
   shopt -u nullglob
 
-  local file=""
-  for file in "${files[@]}"; do
-    local rel_dir=""
-    rel_dir="$(dirname "${file#"$PROJECT_DIR/"}")"
-    targets+=("./$rel_dir")
-  done
+  if (( ${#files[@]} > 0 )); then
+    local file=""
+    for file in "${files[@]}"; do
+      local rel_dir=""
+      rel_dir="$(dirname "${file#"$PROJECT_DIR/"}")"
+      targets+=("./$rel_dir")
+    done
+  fi
 
-  printf '%s\n' "${targets[@]}"
+  if (( ${#targets[@]} > 0 )); then
+    local item=""
+    for item in "${targets[@]}"; do
+      printf '%s\n' "$item"
+    done
+  fi
 }
 
 resolve_go_target() {
-  local targets=()
+  local -a targets=()
   while IFS= read -r line; do
     [[ -n "$line" ]] && targets+=("$line")
   done < <(collect_go_targets)
@@ -454,13 +473,13 @@ sanitize_binary_name() {
 build_go_project() {
   require_command go "Go tidak ditemukan. Install Go dulu."
   require_command pm2 "PM2 tidak ditemukan. Install PM2 dulu."
-
-  resolve_pm2_name
-  resolve_go_port_and_env
-  resolve_go_target
-
   BUILD_RUN_MODE="direct"
   BUILD_GO_VERSION="$(go version | awk '{print $3}')"
+
+  if (( GO_SHOULD_UPDATE_ENV == 1 )); then
+    upsert_env_port "$BUILD_ENV_FILE" "$BUILD_PORT"
+    log_info "PORT disimpan ke $(basename "$BUILD_ENV_FILE"): $BUILD_PORT"
+  fi
 
   local output_dir="$PROJECT_DIR/.gas/bin"
   mkdir -p "$output_dir"
@@ -591,10 +610,6 @@ build_svelte_project() {
   require_command npm "npm tidak ditemukan. Install npm dulu."
   require_command pm2 "PM2 tidak ditemukan. Install PM2 dulu."
 
-  resolve_pm2_name
-  resolve_svelte_port
-  resolve_svelte_run_mode
-
   BUILD_NODE_VERSION="$(node -v 2>/dev/null || true)"
   BUILD_NPM_VERSION="$(npm -v 2>/dev/null || true)"
 
@@ -693,6 +708,100 @@ ensure_metadata_db() {
   printf '%s\n' "$db_path"
 }
 
+metadata_db_path() {
+  printf '%s\n' "$HOME/.config/gas/apps.db"
+}
+
+require_sqlite3() {
+  if command_exists sqlite3; then
+    return 0
+  fi
+  log_warn "sqlite3 tidak ditemukan. Install sqlite3 untuk pakai command ini."
+  return 1
+}
+
+db_has_apps_table() {
+  local db_path="$1"
+  local count
+  count="$(sqlite3 "$db_path" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='apps';" 2>/dev/null || true)"
+  [[ "$count" == "1" ]]
+}
+
+query_info_row() {
+  local db_path="$1"
+  local project_dir="$2"
+  sqlite3 -separator $'\t' "$db_path" "
+    SELECT
+      IFNULL(project_dir, ''),
+      IFNULL(app_type, ''),
+      IFNULL(pm2_name, ''),
+      IFNULL(port, ''),
+      IFNULL(run_mode, ''),
+      IFNULL(env_file, ''),
+      IFNULL(start_file, ''),
+      IFNULL(node_version, ''),
+      IFNULL(npm_version, ''),
+      IFNULL(go_version, ''),
+      IFNULL(updated_at, '')
+    FROM apps
+    WHERE project_dir = $(sql_literal "$project_dir")
+    LIMIT 1;
+  "
+}
+
+query_list_rows() {
+  local db_path="$1"
+  sqlite3 -separator $'\t' "$db_path" "
+    SELECT
+      IFNULL(project_dir, ''),
+      IFNULL(app_type, ''),
+      IFNULL(pm2_name, ''),
+      IFNULL(port, ''),
+      IFNULL(updated_at, '')
+    FROM apps
+    ORDER BY updated_at DESC;
+  "
+}
+
+detect_pm2_status() {
+  local pm2_name="$1"
+  if [[ -z "$pm2_name" ]] || ! command_exists pm2; then
+    printf 'not running\n'
+    return
+  fi
+
+  local described=""
+  described="$(pm2 describe "$pm2_name" 2>/dev/null || true)"
+  if [[ -z "$described" ]]; then
+    printf 'not running\n'
+    return
+  fi
+
+  local status=""
+  status="$(printf '%s\n' "$described" | awk '
+    BEGIN { IGNORECASE = 1 }
+    /status/ {
+      if ($0 ~ /online/)  { print "online";  exit }
+      if ($0 ~ /stopped/) { print "stopped"; exit }
+    }
+  ')"
+
+  if [[ -n "$status" ]]; then
+    printf '%s\n' "$status"
+  else
+    printf 'not running\n'
+  fi
+}
+
+print_kv_line() {
+  local key="$1"
+  local value="$2"
+  if [[ -z "$value" ]]; then
+    value="-"
+  fi
+  printf '%-13s: %s\n' "$key" "$value"
+}
+
 write_metadata() {
   local db_path=""
   db_path="$(ensure_metadata_db || true)"
@@ -759,6 +868,8 @@ gas v$CLI_VERSION
 
 Perintah:
   gas build [options]
+  gas info
+  gas list
   gas help
 
 Build options:
@@ -774,6 +885,42 @@ Contoh:
   gas build
   gas build --no-ui --type go --pm2-name diraaax-api --git-pull yes --yes
   gas build --no-ui --type svelte --port 4001 --pm2-name diraaax-web --run-mode ecosystem --git-pull yes --yes
+
+Detail per command:
+  gas build --help
+  gas info --help
+  gas list --help
+EOF
+}
+
+print_info_help_plain() {
+  cat <<EOF
+gas info - Tampilkan metadata build project saat ini
+
+Yang ditampilkan:
+  - Metadata build berdasarkan current directory
+  - Status PM2 (online, stopped, not running)
+
+Opsi:
+  --help
+  --no-ui
+EOF
+}
+
+print_list_help_plain() {
+  cat <<EOF
+gas list - Tampilkan daftar semua project yang pernah dibuild
+
+Yang ditampilkan:
+  - Project
+  - Type
+  - PM2 name
+  - Port
+  - Updated
+
+Opsi:
+  --help
+  --no-ui
 EOF
 }
 
@@ -831,6 +978,11 @@ print_build_help() {
     printf '  gas build\n'
     printf '  gas build --no-ui --type go --pm2-name diraaax-api --git-pull yes --yes\n'
     printf '  gas build --no-ui --type svelte --port 4001 --pm2-name diraaax-web --run-mode ecosystem --git-pull yes --yes\n'
+    printf '\n'
+    gum style --bold "Detail per command"
+    printf '  gas build --help\n'
+    printf '  gas info --help\n'
+    printf '  gas list --help\n'
     return
   fi
 
@@ -843,6 +995,8 @@ gas v$CLI_VERSION
 
 Daftar command:
   build    Build project Go atau Svelte lalu jalankan via PM2
+  info     Lihat metadata build project pada folder saat ini
+  list     Lihat daftar semua project yang pernah dibuild
   help     Tampilkan panduan lengkap command dan opsi
 
 Untuk detail command:
@@ -857,6 +1011,8 @@ print_overview() {
     printf '\n'
     gum style --bold "Daftar command"
     printf '  build    Build project Go atau Svelte lalu jalankan via PM2\n'
+    printf '  info     Lihat metadata build project pada folder saat ini\n'
+    printf '  list     Lihat daftar semua project yang pernah dibuild\n'
     printf '  help     Tampilkan panduan lengkap command dan opsi\n'
     printf '\n'
     gum style --italic "Untuk detail command: gas help atau gas <command> --help"
@@ -873,6 +1029,8 @@ print_help() {
     printf '\n'
     gum style --bold "Perintah"
     printf '  gas build [options]\n'
+    printf '  gas info\n'
+    printf '  gas list\n'
     printf '  gas help\n'
     printf '\n'
     gum style --bold "Build options"
@@ -963,12 +1121,221 @@ parse_build_args() {
   done
 }
 
+parse_info_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --help|-h)
+        print_info_help_plain
+        exit 0
+        ;;
+      --no-ui)
+        NO_UI=1
+        shift
+        ;;
+      *)
+        die "Flag tidak dikenali untuk 'gas info': $1"
+        ;;
+    esac
+  done
+}
+
+parse_list_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --help|-h)
+        print_list_help_plain
+        exit 0
+        ;;
+      --no-ui)
+        NO_UI=1
+        shift
+        ;;
+      *)
+        die "Flag tidak dikenali untuk 'gas list': $1"
+        ;;
+    esac
+  done
+}
+
+print_info_output_plain() {
+  local project_dir="$1"
+  local app_type="$2"
+  local pm2_name="$3"
+  local port="$4"
+  local run_mode="$5"
+  local env_file="$6"
+  local start_file="$7"
+  local node_version="$8"
+  local npm_version="$9"
+  local go_version="${10}"
+  local updated_at="${11}"
+  local pm2_status="${12}"
+
+  print_kv_line "Project" "$project_dir"
+  print_kv_line "Type" "$app_type"
+  print_kv_line "PM2 name" "$pm2_name"
+  print_kv_line "PM2 status" "$pm2_status"
+  print_kv_line "Port" "$port"
+  print_kv_line "Run mode" "$run_mode"
+  print_kv_line "Env file" "$env_file"
+  print_kv_line "Start file" "$start_file"
+  print_kv_line "Node version" "$node_version"
+  print_kv_line "NPM version" "$npm_version"
+  print_kv_line "Go version" "$go_version"
+  print_kv_line "Last build" "$updated_at"
+}
+
+run_info() {
+  parse_info_args "$@"
+  init_ui_mode
+
+  require_sqlite3 || return 1
+
+  local db_path=""
+  db_path="$(metadata_db_path)"
+  if [[ ! -f "$db_path" ]] || ! db_has_apps_table "$db_path"; then
+    printf 'Project ini belum pernah dibuild dengan gas.\n'
+    return
+  fi
+
+  local row=""
+  row="$(query_info_row "$db_path" "$PROJECT_DIR")"
+  if [[ -z "$row" ]]; then
+    printf 'Project ini belum pernah dibuild dengan gas.\n'
+    return
+  fi
+
+  local project_dir app_type pm2_name port run_mode env_file start_file
+  local node_version npm_version go_version updated_at pm2_status
+  IFS=$'\t' read -r project_dir app_type pm2_name port run_mode env_file start_file node_version npm_version go_version updated_at <<< "$row"
+
+  pm2_status="$(detect_pm2_status "$pm2_name")"
+
+  if (( UI_ENABLED == 1 )) && (( GUM_ENABLED == 1 )); then
+    gum style --bold "gas info"
+    printf '\n'
+    print_info_output_plain \
+      "$project_dir" "$app_type" "$pm2_name" "$port" "$run_mode" "$env_file" \
+      "$start_file" "$node_version" "$npm_version" "$go_version" "$updated_at" "$pm2_status"
+    return
+  fi
+
+  print_info_output_plain \
+    "$project_dir" "$app_type" "$pm2_name" "$port" "$run_mode" "$env_file" \
+    "$start_file" "$node_version" "$npm_version" "$go_version" "$updated_at" "$pm2_status"
+}
+
+print_list_table_plain() {
+  local rows="$1"
+  printf '%-40s %-8s %-20s %-6s %-20s\n' "Project" "Type" "PM2 name" "Port" "Updated"
+  printf '%-40s %-8s %-20s %-6s %-20s\n' "----------------------------------------" "--------" "--------------------" "------" "--------------------"
+  printf '%s\n' "$rows" | awk -F '\t' '
+    {
+      project=$1
+      type=$2
+      pm2=$3
+      port=$4
+      updated=$5
+      if (project == "") project="-"
+      if (type == "") type="-"
+      if (pm2 == "") pm2="-"
+      if (port == "") port="-"
+      if (updated == "") updated="-"
+      printf "%-40.40s %-8.8s %-20.20s %-6.6s %-20.20s\n", project, type, pm2, port, updated
+    }
+  '
+}
+
+run_list() {
+  parse_list_args "$@"
+  init_ui_mode
+
+  require_sqlite3 || return 1
+
+  local db_path=""
+  db_path="$(metadata_db_path)"
+  if [[ ! -f "$db_path" ]] || ! db_has_apps_table "$db_path"; then
+    printf 'Belum ada project yang dibuild menggunakan gas.\n'
+    return
+  fi
+
+  local rows=""
+  rows="$(query_list_rows "$db_path")"
+  if [[ -z "$rows" ]]; then
+    printf 'Belum ada project yang dibuild menggunakan gas.\n'
+    return
+  fi
+
+  if (( NO_UI == 0 )) && command_exists gum; then
+    {
+      printf 'Project\tType\tPM2 name\tPort\tUpdated\n'
+      printf '%s\n' "$rows"
+    } | gum table
+    return
+  fi
+
+  print_list_table_plain "$rows"
+}
+
+collect_build_inputs() {
+  resolve_build_type
+  maybe_git_pull
+
+  case "$BUILD_TYPE" in
+    go)
+      BUILD_RUN_MODE="direct"
+      resolve_pm2_name
+      resolve_go_port_and_env
+      resolve_go_target
+      ;;
+    svelte)
+      resolve_svelte_run_mode
+      resolve_pm2_name
+      resolve_svelte_port
+      ;;
+    *)
+      die "Type tidak valid: $BUILD_TYPE"
+      ;;
+  esac
+}
+
+print_build_plan() {
+  printf '\n'
+  printf 'Rencana build:\n'
+  printf '  Type      : %s\n' "$BUILD_TYPE"
+  printf '  Git pull  : %s\n' "${BUILD_GIT_PULL:-no}"
+  printf '  PM2 name  : %s\n' "$BUILD_PM2_NAME"
+  printf '  Port      : %s\n' "$BUILD_PORT"
+  printf '  Run mode  : %s\n' "${BUILD_RUN_MODE:-direct}"
+  if [[ "$BUILD_TYPE" == "go" ]]; then
+    printf '  Go target : %s\n' "$BUILD_GO_TARGET"
+  fi
+  printf '\n'
+}
+
+confirm_build_execution() {
+  if (( ASSUME_YES == 1 )) || (( UI_ENABLED == 0 )); then
+    return 0
+  fi
+
+  local proceed=""
+  proceed="$(ui_select 'Lanjut eksekusi build dengan konfigurasi di atas?' 'yes' yes no)"
+  [[ "$proceed" == "yes" ]]
+}
+
 run_build() {
   parse_build_args "$@"
   init_ui_mode
 
-  resolve_build_type
-  maybe_git_pull
+  collect_build_inputs
+  print_build_plan
+
+  if ! confirm_build_execution; then
+    printf 'Build dibatalkan.\n'
+    return
+  fi
+
+  execute_git_pull_if_needed
 
   case "$BUILD_TYPE" in
     go)
@@ -1004,6 +1371,12 @@ main() {
   case "$command" in
     build)
       run_build "$@"
+      ;;
+    info)
+      run_info "$@"
+      ;;
+    list)
+      run_list "$@"
       ;;
     help|--help|-h)
       while [[ $# -gt 0 ]]; do
