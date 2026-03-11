@@ -16,9 +16,23 @@ BUILD_PORT=""
 BUILD_PM2_NAME=""
 BUILD_GIT_PULL=""
 BUILD_RUN_MODE=""
+BUILD_STRATEGY=""
+BUILD_STRATEGY_FINAL=""
 BUILD_SVELTE_STRATEGY=""
 BUILD_SVELTE_STRATEGY_FINAL=""
 BUILD_REUSE_ECOSYSTEM=""
+BUILD_USE_ECOSYSTEM_CONFIG=""
+BUILD_ECOSYSTEM_FILE=""
+BUILD_ECOSYSTEM_STATE="not-used"
+BUILD_ECOSYSTEM_DEFAULT_NAME=""
+BUILD_ECOSYSTEM_DEFAULT_PORT=""
+BUILD_ECOSYSTEM_DEFAULT_SCRIPT=""
+BUILD_ECOSYSTEM_DEFAULT_ARGS=""
+BUILD_ECOSYSTEM_DEFAULT_CWD=""
+BUILD_STACK_ID=""
+BUILD_STACK_LABEL=""
+BUILD_STACK_CONFIDENCE=""
+BUILD_STACK_NOTES=""
 
 BUILD_ENV_FILE=""
 BUILD_START_FILE=""
@@ -149,7 +163,7 @@ ui_input() {
   # Untuk stabilitas, input teks pakai prompt Bash biasa.
 
   if [[ -n "$default_value" ]]; then
-    printf '%s [%s]: ' "$prompt" "$default_value" >&2
+    printf '%s (kosong = pakai default: %s): ' "$prompt" "$default_value" >&2
   else
     printf '%s: ' "$prompt" >&2
   fi
@@ -169,14 +183,31 @@ resolve_pm2_name() {
     return
   fi
 
-  local default_name
-  default_name="$(basename "$PROJECT_DIR")"
+  local default_name="${1:-$(basename "$PROJECT_DIR")}"
 
   if (( UI_ENABLED == 1 )) && (( ASSUME_YES == 0 )); then
     BUILD_PM2_NAME="$(ui_input 'PM2 app name' "$default_name")"
   else
     BUILD_PM2_NAME="$default_name"
   fi
+}
+
+resolve_port_input() {
+  local prompt="$1"
+  local default_port="$2"
+
+  if [[ -n "$BUILD_PORT" ]]; then
+    validate_port "$BUILD_PORT" || die "Port tidak valid: $BUILD_PORT"
+    return
+  fi
+
+  if (( UI_ENABLED == 1 )) && (( ASSUME_YES == 0 )); then
+    BUILD_PORT="$(ui_input "$prompt" "$default_port")"
+  else
+    BUILD_PORT="$default_port"
+  fi
+
+  validate_port "$BUILD_PORT" || die "Port tidak valid: $BUILD_PORT"
 }
 
 require_command() {
@@ -272,79 +303,135 @@ upsert_env_port() {
   mv "$tmp_file" "$file"
 }
 
-collect_type_candidates() {
-  local -a candidates=()
-  local has_go=0
-  local has_svelte=0
-
-  if [[ -f "$PROJECT_DIR/go.mod" || -f "$PROJECT_DIR/main.go" ]]; then
-    has_go=1
-  fi
-
-  local -a cmd_targets=()
+has_go_signals() {
+  [[ -f "$PROJECT_DIR/go.mod" || -f "$PROJECT_DIR/main.go" ]] && return 0
   shopt -s nullglob
-  cmd_targets=("$PROJECT_DIR"/cmd/*/main.go)
+  local -a cmd_targets=("$PROJECT_DIR"/cmd/*/main.go)
   shopt -u nullglob
-  if (( ${#cmd_targets[@]} > 0 )); then
+  (( ${#cmd_targets[@]} > 0 ))
+}
+
+package_json_has() {
+  local pattern="$1"
+  [[ -f "$PROJECT_DIR/package.json" ]] || return 1
+  grep -Eqi "$pattern" "$PROJECT_DIR/package.json"
+}
+
+detect_stack() {
+  local has_go=0
+  local has_pkg=0
+  local stack_id="unknown"
+  local stack_label="Unknown"
+  local stack_confidence="low"
+  local stack_notes="Tidak ada indikator stack yang kuat."
+
+  if has_go_signals; then
     has_go=1
   fi
+  [[ -f "$PROJECT_DIR/package.json" ]] && has_pkg=1
 
-  if [[ -f "$PROJECT_DIR/svelte.config.js" || -f "$PROJECT_DIR/svelte.config.ts" ]]; then
-    has_svelte=1
-  fi
-  if [[ -f "$PROJECT_DIR/package.json" ]]; then
-    if grep -Eq '"svelte"|@sveltejs/' "$PROJECT_DIR/package.json"; then
-      has_svelte=1
+  if (( has_pkg == 1 )); then
+    if package_json_has '@sveltejs/kit'; then
+      stack_id="sveltekit"
+      stack_label="SvelteKit app"
+      stack_confidence="high"
+      stack_notes="package.json mengandung @sveltejs/kit."
+    elif package_json_has '"next"|\\bnext\\b'; then
+      stack_id="nextjs"
+      stack_label="Next.js app"
+      stack_confidence="high"
+      stack_notes="package.json mengandung next."
+    elif package_json_has '"nuxt"|\\bnuxt\\b'; then
+      stack_id="nuxt"
+      stack_label="Nuxt app"
+      stack_confidence="high"
+      stack_notes="package.json mengandung nuxt."
+    elif package_json_has '"vite"|\\bvite\\b'; then
+      stack_id="vite"
+      stack_label="Vite app"
+      stack_confidence="medium"
+      stack_notes="package.json mengandung vite."
+    elif (( has_go == 1 )); then
+      stack_id="mixed"
+      stack_label="Mixed Go + Node app"
+      stack_confidence="medium"
+      stack_notes="Go dan package.json terdeteksi bersamaan."
+    else
+      stack_id="node"
+      stack_label="Node app"
+      stack_confidence="medium"
+      stack_notes="package.json ditemukan tanpa framework spesifik."
     fi
+  elif (( has_go == 1 )); then
+    stack_id="go"
+    stack_label="Go app"
+    stack_confidence="high"
+    stack_notes="go.mod/main.go/cmd/*/main.go terdeteksi."
   fi
 
-  if (( has_go == 1 )); then
-    candidates+=("go")
-  fi
-  if (( has_svelte == 1 )); then
-    candidates+=("svelte")
-  fi
+  BUILD_STACK_ID="$stack_id"
+  BUILD_STACK_LABEL="$stack_label"
+  BUILD_STACK_CONFIDENCE="$stack_confidence"
+  BUILD_STACK_NOTES="$stack_notes"
+}
 
-  if (( ${#candidates[@]} > 0 )); then
-    local item=""
-    for item in "${candidates[@]}"; do
-      printf '%s\n' "$item"
-    done
+stack_is_node_based() {
+  case "$BUILD_STACK_ID" in
+    sveltekit|nextjs|nuxt|vite|node|mixed) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+show_detected_stack() {
+  if (( UI_ENABLED == 1 )) && (( GUM_ENABLED == 1 )); then
+    gum style --bold "Folder terdeteksi sebagai: $BUILD_STACK_LABEL"
+    gum style --italic "confidence: $BUILD_STACK_CONFIDENCE | notes: $BUILD_STACK_NOTES"
+  else
+    printf 'Folder ini terdeteksi sebagai project: %s\n' "$BUILD_STACK_LABEL"
+    printf '  confidence: %s\n' "$BUILD_STACK_CONFIDENCE"
+    printf '  notes     : %s\n' "$BUILD_STACK_NOTES"
   fi
 }
 
 resolve_build_type() {
   if [[ -n "$BUILD_TYPE" ]]; then
     case "$BUILD_TYPE" in
-      go|svelte) return ;;
-      *) die "Nilai --type harus go atau svelte" ;;
+      go) return ;;
+      svelte|sveltekit|next|nextjs|nuxt|vite|node|node-web|web)
+        BUILD_TYPE="node-web"
+        return
+        ;;
+      *)
+        die "Nilai --type tidak valid. Gunakan: go | node-web."
+        ;;
     esac
   fi
 
-  local -a candidates=()
-  while IFS= read -r line; do
-    [[ -n "$line" ]] && candidates+=("$line")
-  done < <(collect_type_candidates)
-
-  if (( ${#candidates[@]} == 1 )); then
-    BUILD_TYPE="${candidates[0]}"
-    return
-  fi
-
-  if (( ${#candidates[@]} == 0 )); then
-    if (( UI_ENABLED == 1 )) && (( ASSUME_YES == 0 )); then
-      BUILD_TYPE="$(ui_select 'Pilih jenis project' 'go' go svelte)"
-      return
-    fi
-    die "Tidak bisa deteksi jenis project. Pakai --type go|svelte."
-  fi
-
-  if (( UI_ENABLED == 1 )) && (( ASSUME_YES == 0 )); then
-    BUILD_TYPE="$(ui_select 'Project terdeteksi lebih dari satu jenis. Pilih type' "${candidates[0]}" "${candidates[@]}")"
-    return
-  fi
-
-  die "Jenis project ambigu. Pakai --type go|svelte."
+  case "$BUILD_STACK_ID" in
+    go)
+      BUILD_TYPE="go"
+      ;;
+    sveltekit|nextjs|nuxt|vite|node)
+      BUILD_TYPE="node-web"
+      ;;
+    mixed)
+      if (( UI_ENABLED == 1 )) && (( ASSUME_YES == 0 )); then
+        BUILD_TYPE="$(ui_select 'Project mixed terdeteksi. Pilih mode build' 'node-web' node-web go)"
+      else
+        BUILD_TYPE="node-web"
+      fi
+      ;;
+    unknown)
+      if (( UI_ENABLED == 1 )) && (( ASSUME_YES == 0 )); then
+        BUILD_TYPE="$(ui_select 'Stack tidak dikenali. Pilih mode build' 'node-web' node-web go)"
+      else
+        die "Stack tidak dikenali. Pakai --type go atau --type node-web."
+      fi
+      ;;
+    *)
+      die "Stack terdeteksi tidak didukung: $BUILD_STACK_ID"
+      ;;
+  esac
 }
 
 maybe_git_pull() {
@@ -363,6 +450,118 @@ execute_git_pull_if_needed() {
     log_info "Menjalankan git pull..."
     if ! git pull; then
       log_warn "git pull gagal. Mungkin folder ini bukan root repo git, atau root repo ada di parent."
+    fi
+  fi
+}
+
+detect_ecosystem_file() {
+  local candidates=(
+    "$PROJECT_DIR/ecosystem.config.cjs"
+    "$PROJECT_DIR/ecosystem.config.js"
+    "$PROJECT_DIR/pm2.config.cjs"
+    "$PROJECT_DIR/pm2.config.js"
+  )
+  local file=""
+  BUILD_ECOSYSTEM_FILE=""
+  for file in "${candidates[@]}"; do
+    if [[ -f "$file" ]]; then
+      BUILD_ECOSYSTEM_FILE="$file"
+      return 0
+    fi
+  done
+  return 1
+}
+
+extract_ecosystem_value() {
+  local file="$1"
+  local key="$2"
+  local match=""
+  match="$(grep -Eom1 "${key}[[:space:]]*:[[:space:]]*['\"][^'\"]+['\"]" "$file" || true)"
+  if [[ -z "$match" ]]; then
+    printf '\n'
+    return
+  fi
+  printf '%s\n' "$match" | sed -E "s/^[^:]*:[[:space:]]*['\"]([^'\"]+)['\"].*$/\\1/"
+}
+
+extract_ecosystem_port() {
+  local file="$1"
+  local match=""
+  match="$(grep -Eom1 "PORT[[:space:]]*:[[:space:]]*['\"]?[0-9]{2,5}['\"]?" "$file" || true)"
+  if [[ -z "$match" ]]; then
+    printf '\n'
+    return
+  fi
+  printf '%s\n' "$match" | sed -E 's/.*PORT[[:space:]]*:[[:space:]]*['\''"]?([0-9]{2,5})['\''"]?.*/\1/'
+}
+
+extract_port_from_args() {
+  local args_value="$1"
+  printf '%s\n' "$args_value" | sed -nE "s/.*--port[[:space:]]+([0-9]{2,5}).*/\\1/p" | head -n 1
+}
+
+parse_ecosystem_defaults() {
+  local file="$1"
+  BUILD_ECOSYSTEM_DEFAULT_NAME=""
+  BUILD_ECOSYSTEM_DEFAULT_PORT=""
+  BUILD_ECOSYSTEM_DEFAULT_SCRIPT=""
+  BUILD_ECOSYSTEM_DEFAULT_ARGS=""
+  BUILD_ECOSYSTEM_DEFAULT_CWD=""
+
+  [[ -f "$file" ]] || return 1
+
+  BUILD_ECOSYSTEM_DEFAULT_NAME="$(extract_ecosystem_value "$file" "name")"
+  BUILD_ECOSYSTEM_DEFAULT_SCRIPT="$(extract_ecosystem_value "$file" "script")"
+  BUILD_ECOSYSTEM_DEFAULT_ARGS="$(extract_ecosystem_value "$file" "args")"
+  BUILD_ECOSYSTEM_DEFAULT_CWD="$(extract_ecosystem_value "$file" "cwd")"
+  BUILD_ECOSYSTEM_DEFAULT_PORT="$(extract_ecosystem_port "$file")"
+
+  if [[ -z "$BUILD_ECOSYSTEM_DEFAULT_PORT" && -n "$BUILD_ECOSYSTEM_DEFAULT_ARGS" ]]; then
+    BUILD_ECOSYSTEM_DEFAULT_PORT="$(extract_port_from_args "$BUILD_ECOSYSTEM_DEFAULT_ARGS" || true)"
+  fi
+
+  return 0
+}
+
+show_ecosystem_detection() {
+  if [[ -z "$BUILD_ECOSYSTEM_FILE" ]]; then
+    return
+  fi
+
+  local file_base
+  file_base="$(basename "$BUILD_ECOSYSTEM_FILE")"
+
+  if (( UI_ENABLED == 1 )) && (( GUM_ENABLED == 1 )); then
+    gum style --bold "Ecosystem config ditemukan: $file_base"
+    gum style "name=${BUILD_ECOSYSTEM_DEFAULT_NAME:-?} port=${BUILD_ECOSYSTEM_DEFAULT_PORT:-?} script=${BUILD_ECOSYSTEM_DEFAULT_SCRIPT:-?}"
+  else
+    printf 'Ecosystem config ditemukan: %s\n' "$file_base"
+    printf '  name  : %s\n' "${BUILD_ECOSYSTEM_DEFAULT_NAME:-unknown}"
+    printf '  port  : %s\n' "${BUILD_ECOSYSTEM_DEFAULT_PORT:-unknown}"
+    printf '  script: %s\n' "${BUILD_ECOSYSTEM_DEFAULT_SCRIPT:-unknown}"
+  fi
+}
+
+resolve_use_ecosystem_config() {
+  BUILD_USE_ECOSYSTEM_CONFIG="no"
+  if [[ -z "$BUILD_ECOSYSTEM_FILE" ]]; then
+    BUILD_REUSE_ECOSYSTEM="no"
+    return
+  fi
+
+  if (( UI_ENABLED == 1 )) && (( ASSUME_YES == 0 )); then
+    BUILD_USE_ECOSYSTEM_CONFIG="$(ui_select 'Mau build/run pakai ecosystem config ini?' 'yes' yes no)"
+  else
+    BUILD_USE_ECOSYSTEM_CONFIG="yes"
+  fi
+
+  if [[ "$BUILD_USE_ECOSYSTEM_CONFIG" == "yes" ]]; then
+    if [[ -z "$BUILD_REUSE_ECOSYSTEM" ]]; then
+      BUILD_REUSE_ECOSYSTEM="yes"
+    fi
+  else
+    if [[ -z "$BUILD_REUSE_ECOSYSTEM" ]]; then
+      BUILD_REUSE_ECOSYSTEM="no"
     fi
   fi
 }
@@ -395,31 +594,14 @@ resolve_go_port_and_env() {
   GO_DETECTED_PORT="$detected_port"
   GO_SHOULD_UPDATE_ENV=0
 
-  if [[ -n "$BUILD_PORT" ]]; then
-    validate_port "$BUILD_PORT" || die "Port tidak valid: $BUILD_PORT"
-  else
-    if (( UI_ENABLED == 1 )) && (( ASSUME_YES == 0 )); then
-      if [[ -n "$detected_port" ]]; then
-        local keep_port=""
-        keep_port="$(ui_select "PORT terdeteksi: $detected_port (dari $(basename "$env_file")). Pakai ini?" "yes" yes no)"
-        if [[ "$keep_port" == "yes" ]]; then
-          BUILD_PORT="$detected_port"
-        else
-          BUILD_PORT="$(ui_input 'Masukkan port baru' "$detected_port")"
-        fi
-      else
-        BUILD_PORT="$(ui_input 'Masukkan port' '3000')"
-      fi
-    else
-      if [[ -n "$detected_port" ]]; then
-        BUILD_PORT="$detected_port"
-      else
-        BUILD_PORT="3000"
-      fi
-    fi
+  local default_port="3000"
+  if [[ -n "${BUILD_ECOSYSTEM_DEFAULT_PORT:-}" ]] && validate_port "$BUILD_ECOSYSTEM_DEFAULT_PORT"; then
+    default_port="$BUILD_ECOSYSTEM_DEFAULT_PORT"
+  elif [[ -n "$detected_port" ]] && validate_port "$detected_port"; then
+    default_port="$detected_port"
   fi
 
-  validate_port "$BUILD_PORT" || die "Port tidak valid: $BUILD_PORT"
+  resolve_port_input "Port" "$default_port"
 
   if [[ "$BUILD_PORT" != "$GO_DETECTED_PORT" ]]; then
     GO_SHOULD_UPDATE_ENV=1
@@ -489,6 +671,7 @@ build_go_project() {
   require_command go "Go tidak ditemukan. Install Go dulu."
   require_command pm2 "PM2 tidak ditemukan. Install PM2 dulu."
   BUILD_RUN_MODE="direct"
+  BUILD_STRATEGY_FINAL="go-binary"
   BUILD_GO_VERSION="$(go version | awk '{print $3}')"
 
   if (( GO_SHOULD_UPDATE_ENV == 1 )); then
@@ -513,38 +696,25 @@ build_go_project() {
   run_pm2_direct "$output_bin" "$BUILD_PM2_NAME" "$BUILD_PORT"
 }
 
-resolve_svelte_port() {
-  if [[ -n "$BUILD_PORT" ]]; then
-    validate_port "$BUILD_PORT" || die "Port tidak valid: $BUILD_PORT"
-    return
-  fi
-
+resolve_node_port() {
   local detected=""
   detected="$(detect_env_port)"
   local detected_port="${detected%%;*}"
   local env_file="${detected#*;}"
   BUILD_ENV_FILE=""
 
-  if (( UI_ENABLED == 1 )) && (( ASSUME_YES == 0 )); then
-    if [[ -n "$detected_port" ]]; then
-      BUILD_PORT="$(ui_input 'Port untuk app Svelte' "$detected_port")"
-      BUILD_ENV_FILE="$env_file"
-    else
-      BUILD_PORT="$(ui_input 'Port untuk app Svelte' '3000')"
-    fi
-  else
-    if [[ -n "$detected_port" ]]; then
-      BUILD_PORT="$detected_port"
-      BUILD_ENV_FILE="$env_file"
-    else
-      BUILD_PORT="3000"
-    fi
+  local default_port="3000"
+  if [[ -n "${BUILD_ECOSYSTEM_DEFAULT_PORT:-}" ]] && validate_port "$BUILD_ECOSYSTEM_DEFAULT_PORT"; then
+    default_port="$BUILD_ECOSYSTEM_DEFAULT_PORT"
+  elif [[ -n "$detected_port" ]] && validate_port "$detected_port"; then
+    default_port="$detected_port"
+    BUILD_ENV_FILE="$env_file"
   fi
 
-  validate_port "$BUILD_PORT" || die "Port tidak valid: $BUILD_PORT"
+  resolve_port_input "Port" "$default_port"
 }
 
-resolve_svelte_strategy() {
+resolve_build_strategy() {
   if [[ -n "${BUILD_RUN_MODE:-}" ]]; then
     case "$BUILD_RUN_MODE" in
       direct|ecosystem) ;;
@@ -552,29 +722,64 @@ resolve_svelte_strategy() {
     esac
   fi
 
-  if [[ -n "$BUILD_SVELTE_STRATEGY" ]]; then
-    case "$BUILD_SVELTE_STRATEGY" in
-      auto|preview|direct|ecosystem|adapter-node) return ;;
-      *) die "Nilai --svelte-strategy harus auto|preview|direct|ecosystem|adapter-node" ;;
+  if [[ -n "$BUILD_STRATEGY" ]]; then
+    case "$BUILD_STRATEGY" in
+      auto|ecosystem|node-entry|npm-preview|npm-start) return ;;
+      *) die "Nilai --strategy harus auto|ecosystem|node-entry|npm-preview|npm-start" ;;
     esac
   fi
 
-  # Backward compatibility untuk flag lama --run-mode.
+  if [[ -n "$BUILD_SVELTE_STRATEGY" ]]; then
+    case "$BUILD_SVELTE_STRATEGY" in
+      auto) BUILD_STRATEGY="auto"; return ;;
+      ecosystem) BUILD_STRATEGY="ecosystem"; return ;;
+      direct|adapter-node) BUILD_STRATEGY="node-entry"; return ;;
+      preview) BUILD_STRATEGY="npm-preview"; return ;;
+      *)
+        die "Nilai --svelte-strategy tidak valid."
+        ;;
+    esac
+  fi
+
   case "${BUILD_RUN_MODE:-}" in
-    direct) BUILD_SVELTE_STRATEGY="direct"; return ;;
-    ecosystem) BUILD_SVELTE_STRATEGY="ecosystem"; return ;;
+    direct) BUILD_STRATEGY="node-entry"; return ;;
+    ecosystem) BUILD_STRATEGY="ecosystem"; return ;;
   esac
 
+  local default_strategy="auto"
+  if [[ "$BUILD_USE_ECOSYSTEM_CONFIG" == "yes" ]]; then
+    default_strategy="ecosystem"
+  fi
+
   if (( UI_ENABLED == 1 )) && (( ASSUME_YES == 0 )); then
-    BUILD_SVELTE_STRATEGY="$(ui_select 'Pilih Svelte strategy' 'auto' auto preview direct ecosystem adapter-node)"
+    if (( GUM_ENABLED == 1 )); then
+      gum style --bold "Pilih build strategy"
+      gum style "ecosystem  -> pakai/generate ecosystem PM2 config"
+      gum style "node-entry -> jalankan entry hasil build langsung pakai node"
+      gum style "npm-preview-> jalankan npm run preview"
+      gum style "npm-start  -> jalankan npm run start"
+      gum style "auto       -> pilih terbaik otomatis"
+    else
+      printf 'Build strategy:\n' >&2
+      printf '  ecosystem  -> pakai/generate ecosystem PM2 config\n' >&2
+      printf '  node-entry -> jalankan entry hasil build langsung pakai node\n' >&2
+      printf '  npm-preview-> jalankan npm run preview\n' >&2
+      printf '  npm-start  -> jalankan npm run start\n' >&2
+      printf '  auto       -> pilih terbaik otomatis\n' >&2
+    fi
+    BUILD_STRATEGY="$(ui_select 'Pilih strategy' "$default_strategy" auto ecosystem node-entry npm-start npm-preview)"
   else
-    BUILD_SVELTE_STRATEGY="auto"
+    BUILD_STRATEGY="$default_strategy"
   fi
 }
 
 resolve_reuse_ecosystem() {
-  local ecosystem_file="$PROJECT_DIR/ecosystem.config.cjs"
-  if [[ ! -f "$ecosystem_file" ]]; then
+  if [[ -z "$BUILD_ECOSYSTEM_FILE" ]]; then
+    BUILD_REUSE_ECOSYSTEM="no"
+    return
+  fi
+
+  if [[ "${BUILD_USE_ECOSYSTEM_CONFIG:-no}" != "yes" ]]; then
     BUILD_REUSE_ECOSYSTEM="no"
     return
   fi
@@ -586,126 +791,56 @@ resolve_reuse_ecosystem() {
     esac
   fi
 
-  if [[ "$BUILD_SVELTE_STRATEGY" != "ecosystem" && "$BUILD_SVELTE_STRATEGY" != "auto" ]]; then
+  if [[ "$BUILD_STRATEGY" != "ecosystem" && "$BUILD_STRATEGY" != "auto" ]]; then
     BUILD_REUSE_ECOSYSTEM="no"
     return
   fi
 
   if (( UI_ENABLED == 1 )) && (( ASSUME_YES == 0 )); then
-    BUILD_REUSE_ECOSYSTEM="$(ui_select 'Ditemukan ecosystem.config.cjs. Reuse file existing?' 'yes' yes no)"
+    BUILD_REUSE_ECOSYSTEM="$(ui_select 'Reuse ecosystem config yang ditemukan?' 'yes' yes no)"
   else
     BUILD_REUSE_ECOSYSTEM="yes"
   fi
 }
 
-detect_svelte_direct_entry() {
-  local direct_file="$PROJECT_DIR/build/index.js"
-  local fallback_file="$PROJECT_DIR/.svelte-kit/output/server/index.js"
-
-  if [[ -f "$direct_file" ]]; then
-    printf '%s\n' "$direct_file"
-    return
-  fi
-  if [[ -f "$fallback_file" ]]; then
-    printf '%s\n' "$fallback_file"
-    return
-  fi
+detect_node_entry_file() {
+  local candidates=(
+    "$PROJECT_DIR/build/index.js"
+    "$PROJECT_DIR/.svelte-kit/output/server/index.js"
+    "$PROJECT_DIR/.output/server/index.mjs"
+    "$PROJECT_DIR/dist/server/entry.mjs"
+    "$PROJECT_DIR/server/index.js"
+    "$PROJECT_DIR/dist/index.js"
+  )
+  local item=""
+  for item in "${candidates[@]}"; do
+    if [[ -f "$item" ]]; then
+      printf '%s\n' "$item"
+      return 0
+    fi
+  done
   return 1
 }
 
 has_valid_ecosystem_file() {
-  local ecosystem_file="$PROJECT_DIR/ecosystem.config.cjs"
-  [[ -f "$ecosystem_file" ]] || return 1
-  grep -Eq 'apps[[:space:]]*:' "$ecosystem_file"
+  [[ -n "$BUILD_ECOSYSTEM_FILE" && -f "$BUILD_ECOSYSTEM_FILE" ]] || return 1
+  grep -Eq 'apps[[:space:]]*:' "$BUILD_ECOSYSTEM_FILE"
 }
 
-detect_svelte_config_file() {
-  if [[ -f "$PROJECT_DIR/svelte.config.js" ]]; then
-    printf '%s\n' "$PROJECT_DIR/svelte.config.js"
-    return
-  fi
-  if [[ -f "$PROJECT_DIR/svelte.config.ts" ]]; then
-    printf '%s\n' "$PROJECT_DIR/svelte.config.ts"
-    return
-  fi
+package_has_script() {
+  local script="$1"
+  [[ -f "$PROJECT_DIR/package.json" ]] || return 1
+  node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.exit(p.scripts&&p.scripts[process.argv[2]]?0:1)" "$PROJECT_DIR/package.json" "$script" >/dev/null 2>&1
 }
 
-project_uses_adapter_node() {
-  if [[ -f "$PROJECT_DIR/package.json" ]] && grep -Eq '@sveltejs/adapter-node' "$PROJECT_DIR/package.json"; then
-    return 0
-  fi
-  local config_file=""
-  config_file="$(detect_svelte_config_file || true)"
-  if [[ -n "$config_file" ]] && grep -Eq '@sveltejs/adapter-node' "$config_file"; then
-    return 0
-  fi
-  return 1
-}
-
-project_uses_adapter_auto() {
-  local config_file=""
-  config_file="$(detect_svelte_config_file || true)"
-  [[ -n "$config_file" ]] || return 1
-  grep -Eq '@sveltejs/adapter-auto' "$config_file"
-}
-
-prepare_adapter_node_config() {
-  if project_uses_adapter_node; then
-    return 0
-  fi
-
-  local config_file=""
-  config_file="$(detect_svelte_config_file || true)"
-  [[ -n "$config_file" ]] || {
-    SVELTE_LAST_ERROR="svelte.config.js/ts tidak ditemukan. Tidak bisa update adapter-node dengan aman."
-    return 1
-  }
-
-  if ! project_uses_adapter_auto; then
-    SVELTE_LAST_ERROR="Config tidak memakai adapter-auto, transform otomatis ke adapter-node tidak aman."
-    return 1
-  fi
-
-  if (( UI_ENABLED == 1 )) && (( ASSUME_YES == 0 )); then
-    local do_update=""
-    do_update="$(ui_select 'Project belum pakai adapter-node. Update config ke adapter-node?' 'no' yes no)"
-    if [[ "$do_update" != "yes" ]]; then
-      SVELTE_LAST_ERROR="Adapter-node belum aktif karena update config dibatalkan."
-      return 1
-    fi
-  elif (( ASSUME_YES == 0 )); then
-    SVELTE_LAST_ERROR="Adapter-node belum aktif. Jalankan dengan --yes atau update config manual."
-    return 1
-  fi
-
-  local backup_file="${config_file}.gas.bak.$(date +%Y%m%d%H%M%S)"
-  cp "$config_file" "$backup_file"
-
-  local tmp_file
-  tmp_file="$(mktemp)"
-  sed "s|@sveltejs/adapter-auto|@sveltejs/adapter-node|g" "$config_file" > "$tmp_file"
-
-  if cmp -s "$config_file" "$tmp_file"; then
-    rm -f "$tmp_file"
-    SVELTE_LAST_ERROR="Transform adapter-node tidak menghasilkan perubahan yang aman. File asli tetap utuh di $backup_file."
-    return 1
-  fi
-
-  mv "$tmp_file" "$config_file"
-
-  local q_dir
-  q_dir="$(to_shell_quoted "$PROJECT_DIR")"
-  if ! run_shell_step "Install @sveltejs/adapter-node" "cd $q_dir && npm install -D @sveltejs/adapter-node"; then
-    SVELTE_LAST_ERROR="Gagal install @sveltejs/adapter-node."
-    return 1
-  fi
-
-  SVELTE_BUILD_DONE=0
-  return 0
-}
-
-ensure_svelte_build_ready() {
+ensure_node_build_ready() {
   if (( SVELTE_BUILD_DONE == 1 )); then
+    return 0
+  fi
+
+  if [[ ! -f "$PROJECT_DIR/package.json" ]]; then
+    log_warn "package.json tidak ditemukan. Skip npm install/build."
+    SVELTE_BUILD_DONE=1
     return 0
   fi
 
@@ -719,10 +854,15 @@ ensure_svelte_build_ready() {
     SVELTE_LAST_ERROR="npm install gagal."
     return 1
   }
-  run_shell_step "Menjalankan npm run build" "cd $q_dir && npm run build" || {
-    SVELTE_LAST_ERROR="npm run build gagal."
-    return 1
-  }
+
+  if package_has_script "build"; then
+    run_shell_step "Menjalankan npm run build" "cd $q_dir && npm run build" || {
+      SVELTE_LAST_ERROR="npm run build gagal."
+      return 1
+    }
+  else
+    log_info "Script build tidak ditemukan di package.json, skip npm run build."
+  fi
 
   SVELTE_BUILD_DONE=1
 }
@@ -735,8 +875,13 @@ pm2_replace_and_start() {
   run_shell_step "PM2 start/restart ($BUILD_PM2_NAME)" "$replace_cmd"
 }
 
-run_svelte_preview() {
-  ensure_svelte_build_ready || return 1
+run_node_strategy_npm_preview() {
+  ensure_node_build_ready || return 1
+
+  if ! package_has_script "preview"; then
+    SVELTE_LAST_ERROR="Script npm 'preview' tidak ditemukan."
+    return 1
+  fi
 
   local q_name q_dir q_port
   q_name="$(to_shell_quoted "$BUILD_PM2_NAME")"
@@ -750,17 +895,41 @@ run_svelte_preview() {
   }
 
   BUILD_START_FILE="npm run preview -- --host 0.0.0.0 --port $BUILD_PORT"
-  BUILD_RUN_MODE="preview"
+  BUILD_RUN_MODE="npm-preview"
   return 0
 }
 
-run_svelte_direct() {
-  ensure_svelte_build_ready || return 1
+run_node_strategy_npm_start() {
+  ensure_node_build_ready || return 1
+
+  if ! package_has_script "start"; then
+    SVELTE_LAST_ERROR="Script npm 'start' tidak ditemukan."
+    return 1
+  fi
+
+  local q_name q_dir q_port
+  q_name="$(to_shell_quoted "$BUILD_PM2_NAME")"
+  q_dir="$(to_shell_quoted "$PROJECT_DIR")"
+  q_port="$(to_shell_quoted "$BUILD_PORT")"
+
+  local cmd="PORT=$q_port pm2 start npm --name $q_name --cwd $q_dir -- run start"
+  pm2_replace_and_start "$cmd" || {
+    SVELTE_LAST_ERROR="Gagal menjalankan npm run start via PM2."
+    return 1
+  }
+
+  BUILD_START_FILE="npm run start"
+  BUILD_RUN_MODE="npm-start"
+  return 0
+}
+
+run_node_strategy_node_entry() {
+  ensure_node_build_ready || return 1
 
   local entry_file=""
-  entry_file="$(detect_svelte_direct_entry || true)"
+  entry_file="$(detect_node_entry_file || true)"
   if [[ -z "$entry_file" ]]; then
-    SVELTE_LAST_ERROR="Strategy direct gagal: entry build/index.js atau .svelte-kit/output/server/index.js tidak ditemukan."
+    SVELTE_LAST_ERROR="Strategy node-entry gagal: file entry hasil build tidak ditemukan."
     return 1
   fi
 
@@ -778,7 +947,7 @@ run_svelte_direct() {
   }
 
   BUILD_START_FILE="$entry_file"
-  BUILD_RUN_MODE="direct"
+  BUILD_RUN_MODE="node-entry"
   return 0
 }
 
@@ -789,7 +958,7 @@ write_ecosystem_file() {
   local start_file="${4:-}"
 
   local ecosystem_file="$PROJECT_DIR/ecosystem.config.cjs"
-  if [[ "$mode" == "direct" ]]; then
+  if [[ "$mode" == "node-entry" ]]; then
     local rel_start="$start_file"
     rel_start="${rel_start#"$PROJECT_DIR/"}"
     cat > "$ecosystem_file" <<EOF
@@ -800,6 +969,23 @@ module.exports = {
       cwd: '${PROJECT_DIR}',
       script: 'node',
       args: '${rel_start}',
+      env: {
+        NODE_ENV: 'production',
+        PORT: '${port}'
+      }
+    }
+  ]
+};
+EOF
+  elif [[ "$mode" == "npm-start" ]]; then
+    cat > "$ecosystem_file" <<EOF
+module.exports = {
+  apps: [
+    {
+      name: '${app_name}',
+      cwd: '${PROJECT_DIR}',
+      script: 'npm',
+      args: 'run start',
       env: {
         NODE_ENV: 'production',
         PORT: '${port}'
@@ -830,28 +1016,34 @@ EOF
   printf '%s\n' "$ecosystem_file"
 }
 
-run_svelte_ecosystem() {
-  ensure_svelte_build_ready || return 1
+run_node_strategy_ecosystem() {
+  ensure_node_build_ready || return 1
 
-  local ecosystem_file="$PROJECT_DIR/ecosystem.config.cjs"
-  local mode="preview"
+  local ecosystem_file="${BUILD_ECOSYSTEM_FILE:-$PROJECT_DIR/ecosystem.config.cjs}"
+  local mode="generated"
   local entry_file=""
+  local generated_mode=""
 
-  if [[ "$BUILD_REUSE_ECOSYSTEM" == "yes" && -f "$ecosystem_file" ]]; then
+  if [[ "$BUILD_USE_ECOSYSTEM_CONFIG" == "yes" && "$BUILD_REUSE_ECOSYSTEM" == "yes" && -f "$ecosystem_file" ]]; then
     if ! has_valid_ecosystem_file; then
-      SVELTE_LAST_ERROR="ecosystem.config.cjs ada tapi tidak valid."
+      SVELTE_LAST_ERROR="File ecosystem ditemukan tapi tidak valid."
       return 1
     fi
-    mode="reuse"
+    mode="reused"
   else
-    entry_file="$(detect_svelte_direct_entry || true)"
+    entry_file="$(detect_node_entry_file || true)"
     if [[ -n "$entry_file" ]]; then
-      mode="direct"
-      write_ecosystem_file "$BUILD_PM2_NAME" "$BUILD_PORT" "direct" "$entry_file" >/dev/null
+      generated_mode="node-entry"
+      write_ecosystem_file "$BUILD_PM2_NAME" "$BUILD_PORT" "node-entry" "$entry_file" >/dev/null
+    elif package_has_script "start"; then
+      generated_mode="npm-start"
+      write_ecosystem_file "$BUILD_PM2_NAME" "$BUILD_PORT" "npm-start" >/dev/null
     else
-      mode="preview"
-      write_ecosystem_file "$BUILD_PM2_NAME" "$BUILD_PORT" "preview" >/dev/null
+      generated_mode="npm-preview"
+      write_ecosystem_file "$BUILD_PM2_NAME" "$BUILD_PORT" "npm-preview" >/dev/null
     fi
+    ecosystem_file="$PROJECT_DIR/ecosystem.config.cjs"
+    mode="generated"
   fi
 
   local q_name q_file q_port
@@ -865,33 +1057,14 @@ run_svelte_ecosystem() {
     return 1
   }
 
-  BUILD_SVELTE_ECOSYSTEM_MODE="$mode"
+  BUILD_ECOSYSTEM_FILE="$ecosystem_file"
+  BUILD_ECOSYSTEM_STATE="$mode"
   BUILD_START_FILE="$ecosystem_file"
-  BUILD_RUN_MODE="ecosystem-$mode"
-  return 0
-}
-
-run_svelte_adapter_node_runtime() {
-  ensure_svelte_build_ready || return 1
-
-  if [[ ! -d "$PROJECT_DIR/build" ]]; then
-    SVELTE_LAST_ERROR="Output build tidak ditemukan. Strategy adapter-node butuh folder build."
-    return 1
+  if [[ "$mode" == "generated" ]]; then
+    BUILD_RUN_MODE="ecosystem-$generated_mode"
+  else
+    BUILD_RUN_MODE="ecosystem-reused"
   fi
-
-  local q_name q_dir q_port
-  q_name="$(to_shell_quoted "$BUILD_PM2_NAME")"
-  q_dir="$(to_shell_quoted "$PROJECT_DIR")"
-  q_port="$(to_shell_quoted "$BUILD_PORT")"
-  local cmd="PORT=$q_port pm2 start node --name $q_name --cwd $q_dir -- build"
-
-  pm2_replace_and_start "$cmd" || {
-    SVELTE_LAST_ERROR="Gagal menjalankan node build via PM2."
-    return 1
-  }
-
-  BUILD_START_FILE="$PROJECT_DIR/build"
-  BUILD_RUN_MODE="adapter-node"
   return 0
 }
 
@@ -928,7 +1101,11 @@ verify_runtime() {
   local i=1
   local last_pm2_status="not running"
   local last_port_ok="no"
-  local last_http_ok="no"
+  local last_http_ok="skip"
+  local http_available=0
+  if command_exists curl; then
+    http_available=1
+  fi
 
   while (( i <= attempts )); do
     last_pm2_status="$(detect_pm2_status "$pm2_name")"
@@ -938,13 +1115,17 @@ verify_runtime() {
       last_port_ok="no"
     fi
 
-    if check_http_ready "$port"; then
-      last_http_ok="yes"
+    if (( http_available == 1 )); then
+      if check_http_ready "$port"; then
+        last_http_ok="yes"
+      else
+        last_http_ok="no"
+      fi
     else
-      last_http_ok="no"
+      last_http_ok="skip"
     fi
 
-    if [[ "$last_pm2_status" == "online" && "$last_port_ok" == "yes" && "$last_http_ok" == "yes" ]]; then
+    if [[ "$last_pm2_status" == "online" && "$last_port_ok" == "yes" ]] && { [[ "$last_http_ok" == "yes" ]] || (( http_available == 0 )); }; then
       BUILD_VERIFY_STATUS="success"
       BUILD_VERIFY_MESSAGE="PM2 online, port listen, HTTP OK."
       return 0
@@ -978,7 +1159,11 @@ status='failed'
 message='Runtime belum tervalidasi.'
 pm2_status='not running'
 port_ok='no'
-http_ok='no'
+http_ok='skip'
+http_available='no'
+if command -v curl >/dev/null 2>&1; then
+  http_available='yes'
+fi
 attempt=1
 while [ \$attempt -le 15 ]; do
   raw=\$(pm2 describe "\$pm2_name" 2>/dev/null || true)
@@ -1000,12 +1185,16 @@ while [ \$attempt -le 15 ]; do
     port_ok='yes'
   fi
 
-  http_ok='no'
-  if command -v curl >/dev/null 2>&1 && curl -fsS --max-time 3 "http://127.0.0.1:\$port" >/dev/null 2>&1; then
-    http_ok='yes'
+  if [ "\$http_available" = "yes" ]; then
+    http_ok='no'
+    if curl -fsS --max-time 3 "http://127.0.0.1:\$port" >/dev/null 2>&1; then
+      http_ok='yes'
+    fi
+  else
+    http_ok='skip'
   fi
 
-  if [ "\$pm2_status" = "online" ] && [ "\$port_ok" = "yes" ] && [ "\$http_ok" = "yes" ]; then
+  if [ "\$pm2_status" = "online" ] && [ "\$port_ok" = "yes" ] && { [ "\$http_ok" = "yes" ] || [ "\$http_available" = "no" ]; }; then
     status='success'
     message='PM2 online, port listen, HTTP OK.'
     break
@@ -1037,22 +1226,22 @@ EOF
   verify_runtime "$BUILD_PM2_NAME" "$BUILD_PORT"
 }
 
-run_svelte_strategy_once() {
+run_node_strategy_once() {
   local strategy="$1"
   SVELTE_LAST_ERROR=""
 
   case "$strategy" in
-    preview)
-      run_svelte_preview
+    node-entry)
+      run_node_strategy_node_entry
       ;;
-    direct)
-      run_svelte_direct
+    npm-preview)
+      run_node_strategy_npm_preview
       ;;
     ecosystem)
-      run_svelte_ecosystem
+      run_node_strategy_ecosystem
       ;;
-    adapter-node)
-      run_svelte_adapter_node_runtime
+    npm-start)
+      run_node_strategy_npm_start
       ;;
     *)
       SVELTE_LAST_ERROR="Strategy tidak dikenal: $strategy"
@@ -1061,23 +1250,17 @@ run_svelte_strategy_once() {
   esac
 }
 
-build_svelte_project() {
+build_node_web_project() {
   require_command node "Node.js tidak ditemukan. Install Node.js dulu."
   require_command npm "npm tidak ditemukan. Install npm dulu."
   require_command pm2 "PM2 tidak ditemukan. Install PM2 dulu."
 
-  local requested_strategy="$BUILD_SVELTE_STRATEGY"
+  local requested_strategy="$BUILD_STRATEGY"
   local final_strategy=""
   local attempted_errors=""
 
-  if [[ "$requested_strategy" == "adapter-node" ]]; then
-    if ! prepare_adapter_node_config; then
-      die "${SVELTE_LAST_ERROR:-Gagal menyiapkan adapter-node.}"
-    fi
-  fi
-
   if [[ "$requested_strategy" != "auto" ]]; then
-    if ! run_svelte_strategy_once "$requested_strategy"; then
+    if ! run_node_strategy_once "$requested_strategy"; then
       die "${SVELTE_LAST_ERROR:-Strategy $requested_strategy gagal dijalankan.}"
     fi
 
@@ -1087,35 +1270,35 @@ build_svelte_project() {
 
     final_strategy="$requested_strategy"
   else
-    if project_uses_adapter_node; then
-      if run_svelte_strategy_once "adapter-node" && verify_runtime_with_feedback; then
-        final_strategy="adapter-node"
-      else
-        attempted_errors+="adapter-node: ${SVELTE_LAST_ERROR:-$BUILD_VERIFY_MESSAGE}; "
-      fi
-    fi
-
-    if [[ -z "$final_strategy" ]] && has_valid_ecosystem_file; then
-      if run_svelte_strategy_once "ecosystem" && verify_runtime_with_feedback; then
+    if has_valid_ecosystem_file; then
+      if run_node_strategy_once "ecosystem" && verify_runtime_with_feedback; then
         final_strategy="ecosystem"
       else
         attempted_errors+="ecosystem: ${SVELTE_LAST_ERROR:-$BUILD_VERIFY_MESSAGE}; "
       fi
     fi
 
-    if [[ -z "$final_strategy" ]]; then
-      if run_svelte_strategy_once "direct" && verify_runtime_with_feedback; then
-        final_strategy="direct"
+    if [[ -z "$final_strategy" ]] && package_has_script "start"; then
+      if run_node_strategy_once "npm-start" && verify_runtime_with_feedback; then
+        final_strategy="npm-start"
       else
-        attempted_errors+="direct: ${SVELTE_LAST_ERROR:-$BUILD_VERIFY_MESSAGE}; "
+        attempted_errors+="npm-start: ${SVELTE_LAST_ERROR:-$BUILD_VERIFY_MESSAGE}; "
       fi
     fi
 
     if [[ -z "$final_strategy" ]]; then
-      if run_svelte_strategy_once "preview" && verify_runtime_with_feedback; then
-        final_strategy="preview"
+      if run_node_strategy_once "node-entry" && verify_runtime_with_feedback; then
+        final_strategy="node-entry"
       else
-        attempted_errors+="preview: ${SVELTE_LAST_ERROR:-$BUILD_VERIFY_MESSAGE}; "
+        attempted_errors+="node-entry: ${SVELTE_LAST_ERROR:-$BUILD_VERIFY_MESSAGE}; "
+      fi
+    fi
+
+    if [[ -z "$final_strategy" ]]; then
+      if run_node_strategy_once "npm-preview" && verify_runtime_with_feedback; then
+        final_strategy="npm-preview"
+      else
+        attempted_errors+="npm-preview: ${SVELTE_LAST_ERROR:-$BUILD_VERIFY_MESSAGE}; "
       fi
     fi
 
@@ -1124,7 +1307,12 @@ build_svelte_project() {
     fi
   fi
 
+  BUILD_STRATEGY_FINAL="$final_strategy"
   BUILD_SVELTE_STRATEGY_FINAL="$final_strategy"
+}
+
+build_svelte_project() {
+  build_node_web_project
 }
 
 sql_literal() {
@@ -1309,7 +1497,11 @@ write_metadata() {
   local svelte_strategy_sql verify_status_sql verify_message_sql updated_at_sql
 
   project_dir_sql="$(sql_literal "$PROJECT_DIR")"
-  app_type_sql="$(sql_literal "$BUILD_TYPE")"
+  if [[ "$BUILD_TYPE" == "node-web" && -n "$BUILD_STACK_ID" ]]; then
+    app_type_sql="$(sql_literal "$BUILD_STACK_ID")"
+  else
+    app_type_sql="$(sql_literal "$BUILD_TYPE")"
+  fi
   port_sql="$(sql_literal "$BUILD_PORT")"
   pm2_name_sql="$(sql_literal "$BUILD_PM2_NAME")"
   env_file_sql="$(sql_literal "$BUILD_ENV_FILE")"
@@ -1318,7 +1510,7 @@ write_metadata() {
   node_version_sql="$(sql_literal "$BUILD_NODE_VERSION")"
   npm_version_sql="$(sql_literal "$BUILD_NPM_VERSION")"
   go_version_sql="$(sql_literal "$BUILD_GO_VERSION")"
-  svelte_strategy_sql="$(sql_literal "$BUILD_SVELTE_STRATEGY_FINAL")"
+  svelte_strategy_sql="$(sql_literal "${BUILD_STRATEGY_FINAL:-$BUILD_SVELTE_STRATEGY_FINAL}")"
   verify_status_sql="$(sql_literal "$BUILD_VERIFY_STATUS")"
   verify_message_sql="$(sql_literal "$BUILD_VERIFY_MESSAGE")"
   updated_at_sql="$(sql_literal "$now_utc")"
@@ -1374,20 +1566,27 @@ Perintah:
   gas help
 
 Build options:
-  --type go|svelte
+  --type go|node-web
   --port <port>
   --pm2-name <name>
   --git-pull yes|no
-  --run-mode ecosystem|direct              (legacy, untuk compat)
-  --svelte-strategy auto|preview|direct|ecosystem|adapter-node
-  --reuse-ecosystem yes|no                 (khusus strategy ecosystem/auto)
+  --strategy auto|ecosystem|node-entry|npm-preview|npm-start
+  --run-mode ecosystem|direct              (legacy alias)
+  --svelte-strategy auto|preview|direct|ecosystem|adapter-node   (legacy alias)
+  --reuse-ecosystem yes|no
   --no-ui
   --yes
+
+Catatan:
+  - gas build akan deteksi stack otomatis (Go/SvelteKit/Next/Nuxt/Vite/Node/Unknown)
+  - Jika ada ecosystem config, gas akan baca default name/port best effort
+  - Input kosong akan memakai default yang ditampilkan di prompt
 
 Contoh:
   gas build
   gas build --no-ui --type go --pm2-name diraaax-api --git-pull yes --yes
-  gas build --no-ui --type svelte --port 4001 --pm2-name diraaax-web --svelte-strategy auto --git-pull yes --yes
+  gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --strategy auto --git-pull no --yes
+  gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --strategy ecosystem --reuse-ecosystem yes --git-pull no --yes
 
 Detail per command:
   gas build --help
@@ -1429,70 +1628,87 @@ EOF
 
 print_build_help_plain() {
   cat <<EOF
-gas build - Build project Go atau Svelte lalu jalankan via PM2
+gas build - Build project Go atau Node web lalu jalankan via PM2
 
 Yang dilakukan command ini:
-  - Deteksi project dari current directory
-  - (Opsional) git pull sebelum build
-  - Build sesuai type (go / svelte)
-  - Jalankan atau restart app di PM2
+  - Deteksi stack project dari current directory
+  - Tawarkan git pull dulu
+  - Cek ecosystem/pm2 config (jika ada) dan baca default best effort
+  - Kumpulkan pilihan (type/strategy/pm2/port) lalu tampilkan summary
+  - Jalankan build + run via PM2 sesuai strategy
+  - Verifikasi runtime (PM2 online, port listen, HTTP localhost)
   - Simpan metadata global ke ~/.config/gas/apps.db
 
 Opsi:
-  --type go|svelte
+  --type go|node-web
   --port <port>
   --pm2-name <name>
   --git-pull yes|no
-  --run-mode ecosystem|direct   (legacy, kompatibilitas lama)
-  --svelte-strategy auto|preview|direct|ecosystem|adapter-node
+  --strategy auto|ecosystem|node-entry|npm-preview|npm-start
+  --run-mode ecosystem|direct   (legacy alias)
+  --svelte-strategy auto|preview|direct|ecosystem|adapter-node  (legacy alias)
   --reuse-ecosystem yes|no
   --no-ui
   --yes
   --help
 
+Strategy:
+  ecosystem  - pakai/reuse/generate ecosystem config PM2
+  node-entry - jalankan entry hasil build via node
+  npm-preview- jalankan npm run preview
+  npm-start  - jalankan npm run start
+  auto       - pilih strategy terbaik otomatis
+
 Contoh:
   gas build
   gas build --no-ui --type go --pm2-name diraaax-api --git-pull yes --yes
-  gas build --no-ui --type svelte --port 4001 --pm2-name diraaax-web --svelte-strategy auto --git-pull yes --yes
-  gas build --no-ui --type svelte --port 3000 --pm2-name marbot-web --svelte-strategy preview --git-pull no --yes
-  gas build --no-ui --type svelte --port 3000 --pm2-name marbot-web --svelte-strategy direct --git-pull no --yes
-  gas build --no-ui --type svelte --port 3000 --pm2-name marbot-web --svelte-strategy ecosystem --reuse-ecosystem yes --git-pull no --yes
-  gas build --no-ui --type svelte --port 3000 --pm2-name marbot-web --svelte-strategy adapter-node --git-pull no --yes
+  gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --strategy auto --git-pull no --yes
+  gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --strategy npm-start --git-pull no --yes
+  gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --strategy node-entry --git-pull no --yes
+  gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --strategy ecosystem --reuse-ecosystem yes --git-pull no --yes
 EOF
 }
 
 print_build_help() {
   if (( NO_UI == 0 )) && command_exists gum && is_interactive_terminal; then
     gum style --bold "gas build"
-    gum style "Build project Go atau Svelte lalu jalankan via PM2"
+    gum style "Build project Go atau Node web lalu jalankan via PM2"
     printf '\n'
     gum style --bold "Yang dilakukan command ini"
-    printf '  - Deteksi project dari current directory\n'
+    printf '  - Deteksi stack project dari current directory\n'
     printf '  - (Opsional) git pull sebelum build\n'
-    printf '  - Build sesuai type (go / svelte)\n'
-    printf '  - Jalankan atau restart app di PM2\n'
+    printf '  - Cek ecosystem config dan ambil default best effort\n'
+    printf '  - Build + run via PM2 sesuai strategy\n'
+    printf '  - Verifikasi runtime (PM2, port, HTTP)\n'
     printf '  - Simpan metadata global ke ~/.config/gas/apps.db\n'
     printf '\n'
     gum style --bold "Opsi"
-    printf '  --type go|svelte\n'
+    printf '  --type go|node-web\n'
     printf '  --port <port>\n'
     printf '  --pm2-name <name>\n'
     printf '  --git-pull yes|no\n'
-    printf '  --run-mode ecosystem|direct   (legacy, kompatibilitas lama)\n'
-    printf '  --svelte-strategy auto|preview|direct|ecosystem|adapter-node\n'
+    printf '  --strategy auto|ecosystem|node-entry|npm-preview|npm-start\n'
+    printf '  --run-mode ecosystem|direct   (legacy alias)\n'
+    printf '  --svelte-strategy auto|preview|direct|ecosystem|adapter-node (legacy alias)\n'
     printf '  --reuse-ecosystem yes|no\n'
     printf '  --no-ui\n'
     printf '  --yes\n'
     printf '  --help\n'
     printf '\n'
+    gum style --bold "Strategy"
+    printf '  ecosystem  - pakai/reuse/generate ecosystem config PM2\n'
+    printf '  node-entry - jalankan entry hasil build via node\n'
+    printf '  npm-preview- jalankan npm run preview\n'
+    printf '  npm-start  - jalankan npm run start\n'
+    printf '  auto       - pilih strategy terbaik otomatis\n'
+    printf '\n'
     gum style --bold "Contoh"
     printf '  gas build\n'
     printf '  gas build --no-ui --type go --pm2-name diraaax-api --git-pull yes --yes\n'
-    printf '  gas build --no-ui --type svelte --port 4001 --pm2-name diraaax-web --svelte-strategy auto --git-pull yes --yes\n'
-    printf '  gas build --no-ui --type svelte --port 3000 --pm2-name marbot-web --svelte-strategy preview --git-pull no --yes\n'
-    printf '  gas build --no-ui --type svelte --port 3000 --pm2-name marbot-web --svelte-strategy direct --git-pull no --yes\n'
-    printf '  gas build --no-ui --type svelte --port 3000 --pm2-name marbot-web --svelte-strategy ecosystem --reuse-ecosystem yes --git-pull no --yes\n'
-    printf '  gas build --no-ui --type svelte --port 3000 --pm2-name marbot-web --svelte-strategy adapter-node --git-pull no --yes\n'
+    printf '  gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --strategy auto --git-pull no --yes\n'
+    printf '  gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --strategy npm-start --git-pull no --yes\n'
+    printf '  gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --strategy node-entry --git-pull no --yes\n'
+    printf '  gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --strategy ecosystem --reuse-ecosystem yes --git-pull no --yes\n'
     printf '\n'
     gum style --bold "Detail per command"
     printf '  gas build --help\n'
@@ -1509,7 +1725,7 @@ print_overview_plain() {
 gas v$CLI_VERSION
 
 Daftar command:
-  build    Build project Go atau Svelte lalu jalankan via PM2
+  build    Build project Go/Node web dengan stack detect + strategy
   info     Lihat metadata build project pada folder saat ini
   list     Lihat daftar semua project yang pernah dibuild
   help     Tampilkan panduan lengkap command dan opsi
@@ -1525,7 +1741,7 @@ print_overview() {
     gum style --bold "gas v$CLI_VERSION"
     printf '\n'
     gum style --bold "Daftar command"
-    printf '  build    Build project Go atau Svelte lalu jalankan via PM2\n'
+    printf '  build    Build project Go/Node web dengan stack detect + strategy\n'
     printf '  info     Lihat metadata build project pada folder saat ini\n'
     printf '  list     Lihat daftar semua project yang pernah dibuild\n'
     printf '  help     Tampilkan panduan lengkap command dan opsi\n'
@@ -1540,7 +1756,7 @@ print_overview() {
 print_help() {
   if (( NO_UI == 0 )) && command_exists gum && is_interactive_terminal; then
     gum style --bold "gas v$CLI_VERSION"
-    gum style "CLI build helper untuk project Go & Svelte"
+    gum style "CLI build helper untuk project Go dan Node ecosystem"
     printf '\n'
     gum style --bold "Perintah"
     printf '  gas build [options]\n'
@@ -1549,20 +1765,26 @@ print_help() {
     printf '  gas help\n'
     printf '\n'
     gum style --bold "Build options"
-    printf '  --type go|svelte\n'
+    printf '  --type go|node-web\n'
     printf '  --port <port>\n'
     printf '  --pm2-name <name>\n'
     printf '  --git-pull yes|no\n'
-    printf '  --run-mode ecosystem|direct              (legacy)\n'
-    printf '  --svelte-strategy auto|preview|direct|ecosystem|adapter-node\n'
+    printf '  --strategy auto|ecosystem|node-entry|npm-preview|npm-start\n'
+    printf '  --run-mode ecosystem|direct              (legacy alias)\n'
+    printf '  --svelte-strategy auto|preview|direct|ecosystem|adapter-node (legacy alias)\n'
     printf '  --reuse-ecosystem yes|no\n'
     printf '  --no-ui\n'
     printf '  --yes\n'
     printf '\n'
+    gum style --bold "Catatan"
+    printf '  - Stack dideteksi otomatis: Go/SvelteKit/Next/Nuxt/Vite/Node/Unknown\n'
+    printf '  - Ecosystem config akan dideteksi otomatis (jika ada)\n'
+    printf '  - Input kosong memakai default yang ditampilkan\n'
+    printf '\n'
     gum style --bold "Contoh"
     printf '  gas build\n'
     printf '  gas build --no-ui --type go --pm2-name diraaax-api --git-pull yes --yes\n'
-    printf '  gas build --no-ui --type svelte --port 4001 --pm2-name diraaax-web --svelte-strategy auto --git-pull yes --yes\n'
+    printf '  gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --strategy auto --git-pull no --yes\n'
     return
   fi
 
@@ -1617,6 +1839,15 @@ parse_build_args() {
         ;;
       --run-mode=*)
         BUILD_RUN_MODE="${1#*=}"
+        shift
+        ;;
+      --strategy)
+        [[ $# -ge 2 ]] || die "Flag --strategy butuh nilai."
+        BUILD_STRATEGY="$2"
+        shift 2
+        ;;
+      --strategy=*)
+        BUILD_STRATEGY="${1#*=}"
         shift
         ;;
       --svelte-strategy)
@@ -1815,23 +2046,35 @@ run_list() {
 }
 
 collect_build_inputs() {
+  detect_stack
+  show_detected_stack
   resolve_build_type
   maybe_git_pull
+  detect_ecosystem_file || true
+  if [[ -n "$BUILD_ECOSYSTEM_FILE" ]]; then
+    parse_ecosystem_defaults "$BUILD_ECOSYSTEM_FILE" || true
+    BUILD_ECOSYSTEM_STATE="existing"
+    show_ecosystem_detection
+    resolve_use_ecosystem_config
+  else
+    BUILD_USE_ECOSYSTEM_CONFIG="no"
+    BUILD_REUSE_ECOSYSTEM="no"
+  fi
 
   case "$BUILD_TYPE" in
     go)
-      [[ -z "$BUILD_SVELTE_STRATEGY" ]] || die "--svelte-strategy hanya berlaku untuk --type svelte."
-      [[ -z "$BUILD_REUSE_ECOSYSTEM" ]] || die "--reuse-ecosystem hanya berlaku untuk --type svelte."
+      [[ -z "$BUILD_STRATEGY" ]] || die "--strategy hanya berlaku untuk --type node-web."
+      [[ -z "$BUILD_SVELTE_STRATEGY" ]] || die "--svelte-strategy hanya berlaku untuk --type node-web."
       BUILD_RUN_MODE="direct"
-      resolve_pm2_name
+      resolve_pm2_name "${BUILD_ECOSYSTEM_DEFAULT_NAME:-$(basename "$PROJECT_DIR")}"
       resolve_go_port_and_env
       resolve_go_target
       ;;
-    svelte)
-      resolve_svelte_strategy
-      resolve_pm2_name
-      resolve_svelte_port
+    node-web)
+      resolve_build_strategy
       resolve_reuse_ecosystem
+      resolve_pm2_name "${BUILD_ECOSYSTEM_DEFAULT_NAME:-$(basename "$PROJECT_DIR")}"
+      resolve_node_port
       ;;
     *)
       die "Type tidak valid: $BUILD_TYPE"
@@ -1842,13 +2085,17 @@ collect_build_inputs() {
 print_build_plan() {
   printf '\n'
   printf 'Rencana build:\n'
+  printf '  Folder    : %s\n' "$PROJECT_DIR"
+  printf '  Stack     : %s\n' "${BUILD_STACK_LABEL:-Unknown}"
   printf '  Type      : %s\n' "$BUILD_TYPE"
   printf '  Git pull  : %s\n' "${BUILD_GIT_PULL:-no}"
   printf '  PM2 name  : %s\n' "$BUILD_PM2_NAME"
   printf '  Port      : %s\n' "$BUILD_PORT"
-  if [[ "$BUILD_TYPE" == "svelte" ]]; then
-    printf '  Strategy  : %s\n' "${BUILD_SVELTE_STRATEGY:-auto}"
-    if [[ -f "$PROJECT_DIR/ecosystem.config.cjs" ]]; then
+  if [[ "$BUILD_TYPE" == "node-web" ]]; then
+    printf '  Strategy  : %s\n' "${BUILD_STRATEGY:-auto}"
+    if [[ -n "$BUILD_ECOSYSTEM_FILE" ]]; then
+      printf '  Ecosystem : %s\n' "$(basename "$BUILD_ECOSYSTEM_FILE")"
+      printf '  Use eco   : %s\n' "${BUILD_USE_ECOSYSTEM_CONFIG:-no}"
       printf '  Reuse eco : %s\n' "${BUILD_REUSE_ECOSYSTEM:-no}"
     fi
   else
@@ -1874,10 +2121,23 @@ run_build() {
   parse_build_args "$@"
   init_ui_mode
 
+  BUILD_STACK_ID=""
+  BUILD_STACK_LABEL=""
+  BUILD_STACK_CONFIDENCE=""
+  BUILD_STACK_NOTES=""
+  BUILD_ECOSYSTEM_FILE=""
+  BUILD_ECOSYSTEM_STATE="not-used"
+  BUILD_ECOSYSTEM_DEFAULT_NAME=""
+  BUILD_ECOSYSTEM_DEFAULT_PORT=""
+  BUILD_ECOSYSTEM_DEFAULT_SCRIPT=""
+  BUILD_ECOSYSTEM_DEFAULT_ARGS=""
+  BUILD_ECOSYSTEM_DEFAULT_CWD=""
+  BUILD_USE_ECOSYSTEM_CONFIG=""
+  BUILD_STRATEGY_FINAL=""
   BUILD_SVELTE_STRATEGY_FINAL=""
   BUILD_VERIFY_STATUS="not_checked"
   BUILD_VERIFY_MESSAGE="-"
-  BUILD_SVELTE_ECOSYSTEM_MODE=""
+  BUILD_SVELTE_ECOSYSTEM_MODE="not-used"
   SVELTE_BUILD_DONE=0
   SVELTE_LAST_ERROR=""
 
@@ -1894,9 +2154,12 @@ run_build() {
   case "$BUILD_TYPE" in
     go)
       build_go_project
+      if ! verify_runtime_with_feedback; then
+        die "Runtime Go gagal diverifikasi: $BUILD_VERIFY_MESSAGE"
+      fi
       ;;
-    svelte)
-      build_svelte_project
+    node-web)
+      build_node_web_project
       ;;
     *)
       die "Type tidak valid: $BUILD_TYPE"
@@ -1907,15 +2170,15 @@ run_build() {
 
   printf '\n'
   printf 'Build selesai.\n'
-  printf 'Type      : %s\n' "$BUILD_TYPE"
-  printf 'PM2 name  : %s\n' "$BUILD_PM2_NAME"
-  printf 'Port      : %s\n' "$BUILD_PORT"
-  printf 'Run mode  : %s\n' "${BUILD_RUN_MODE:-direct}"
-  if [[ "$BUILD_TYPE" == "svelte" ]]; then
-    printf 'Strategy  : %s\n' "${BUILD_SVELTE_STRATEGY_FINAL:-$BUILD_SVELTE_STRATEGY}"
-    printf 'Verify    : %s\n' "${BUILD_VERIFY_STATUS:-not_checked}"
-    printf 'Verify msg: %s\n' "${BUILD_VERIFY_MESSAGE:--}"
-  fi
+  printf 'Folder      : %s\n' "$PROJECT_DIR"
+  printf 'Stack       : %s\n' "${BUILD_STACK_LABEL:-Unknown}"
+  printf 'Type        : %s\n' "$BUILD_TYPE"
+  printf 'Strategy    : %s\n' "${BUILD_STRATEGY_FINAL:-${BUILD_STRATEGY:-go-binary}}"
+  printf 'PM2 name    : %s\n' "$BUILD_PM2_NAME"
+  printf 'Port        : %s\n' "$BUILD_PORT"
+  printf 'Status      : %s\n' "${BUILD_VERIFY_STATUS:-unknown}"
+  printf 'Verify msg  : %s\n' "${BUILD_VERIFY_MESSAGE:--}"
+  printf 'Ecosystem   : %s\n' "${BUILD_ECOSYSTEM_STATE:-not-used}"
 }
 
 main() {
