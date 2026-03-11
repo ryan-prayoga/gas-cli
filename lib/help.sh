@@ -16,6 +16,7 @@ Build options:
   --port <port>
   --pm2-name <name>
   --git-pull yes|no
+  --install-deps auto|yes|no
   --strategy auto|ecosystem|node-entry|npm-preview|npm-start
   --run-mode ecosystem|direct              (legacy alias)
   --svelte-strategy auto|preview|direct|ecosystem|adapter-node   (legacy alias)
@@ -90,6 +91,7 @@ Opsi:
   --port <port>
   --pm2-name <name>
   --git-pull yes|no
+  --install-deps auto|yes|no
   --strategy auto|ecosystem|node-entry|npm-preview|npm-start
   --run-mode ecosystem|direct   (legacy alias)
   --svelte-strategy auto|preview|direct|ecosystem|adapter-node  (legacy alias)
@@ -105,6 +107,11 @@ Strategy:
   npm-start  - jalankan npm run start
   auto       - pilih strategy terbaik otomatis
 
+Install dependency mode:
+  auto       - install hanya jika dibutuhkan (default)
+  yes        - selalu install dependency sebelum build
+  no         - tidak install dependency
+
 Contoh:
   gas build
   gas build --no-ui --type go --pm2-name diraaax-api --git-pull yes --yes
@@ -112,6 +119,9 @@ Contoh:
   gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --strategy npm-start --git-pull no --yes
   gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --strategy node-entry --git-pull no --yes
   gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --strategy ecosystem --reuse-ecosystem yes --git-pull no --yes
+  gas build --install-deps auto
+  gas build --install-deps yes
+  gas build --install-deps no
 EOF
 }
 
@@ -133,6 +143,7 @@ print_build_help() {
     printf '  --port <port>\n'
     printf '  --pm2-name <name>\n'
     printf '  --git-pull yes|no\n'
+    printf '  --install-deps auto|yes|no\n'
     printf '  --strategy auto|ecosystem|node-entry|npm-preview|npm-start\n'
     printf '  --run-mode ecosystem|direct   (legacy alias)\n'
     printf '  --svelte-strategy auto|preview|direct|ecosystem|adapter-node (legacy alias)\n'
@@ -148,6 +159,11 @@ print_build_help() {
     printf '  npm-start  - jalankan npm run start\n'
     printf '  auto       - pilih strategy terbaik otomatis\n'
     printf '\n'
+    gum style --bold "Install dependency mode"
+    printf '  auto       - install hanya jika dibutuhkan (default)\n'
+    printf '  yes        - selalu install dependency sebelum build\n'
+    printf '  no         - tidak install dependency\n'
+    printf '\n'
     gum style --bold "Contoh"
     printf '  gas build\n'
     printf '  gas build --no-ui --type go --pm2-name diraaax-api --git-pull yes --yes\n'
@@ -155,6 +171,9 @@ print_build_help() {
     printf '  gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --strategy npm-start --git-pull no --yes\n'
     printf '  gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --strategy node-entry --git-pull no --yes\n'
     printf '  gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --strategy ecosystem --reuse-ecosystem yes --git-pull no --yes\n'
+    printf '  gas build --install-deps auto\n'
+    printf '  gas build --install-deps yes\n'
+    printf '  gas build --install-deps no\n'
     printf '\n'
     gum style --bold "Detail per command"
     printf '  gas build --help\n'
@@ -215,6 +234,7 @@ print_help() {
     printf '  --port <port>\n'
     printf '  --pm2-name <name>\n'
     printf '  --git-pull yes|no\n'
+    printf '  --install-deps auto|yes|no\n'
     printf '  --strategy auto|ecosystem|node-entry|npm-preview|npm-start\n'
     printf '  --run-mode ecosystem|direct              (legacy alias)\n'
     printf '  --svelte-strategy auto|preview|direct|ecosystem|adapter-node (legacy alias)\n'
@@ -236,4 +256,3 @@ print_help() {
 
   print_help_plain
 }
-

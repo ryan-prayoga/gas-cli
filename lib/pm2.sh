@@ -20,7 +20,6 @@ run_pm2_direct() {
   fi
 }
 
-
 pm2_replace_and_start() {
   local command_text="$1"
   local q_name
@@ -28,7 +27,6 @@ pm2_replace_and_start() {
   local replace_cmd="if pm2 describe $q_name >/dev/null 2>&1; then pm2 delete $q_name >/dev/null 2>&1 || true; fi; $command_text"
   run_shell_step "PM2 start/restart ($BUILD_PM2_NAME)" "$replace_cmd"
 }
-
 
 check_port_listening() {
   local port="$1"
@@ -53,141 +51,102 @@ check_http_ready() {
   return 1
 }
 
+verify_pm2_status() {
+  local pm2_name="$1"
+  [[ "$(detect_pm2_status "$pm2_name")" == "online" ]]
+}
+
+verify_port_listen() {
+  local port="$1"
+  check_port_listening "$port"
+}
+
+verify_http_health() {
+  local port="$1"
+  if ! command_exists curl; then
+    return 2
+  fi
+  check_http_ready "$port"
+}
+
 verify_runtime() {
   local pm2_name="$1"
   local port="$2"
+
   BUILD_VERIFY_STATUS="failed"
   BUILD_VERIFY_MESSAGE="Runtime belum tervalidasi."
+  BUILD_HEALTH_STATUS="failed"
 
   local attempts=15
   local i=1
   local last_pm2_status="not running"
   local last_port_ok="no"
-  local last_http_ok="skip"
-  local http_available=0
+  local last_http_status="skipped"
+  local has_curl=0
   if command_exists curl; then
-    http_available=1
+    has_curl=1
   fi
 
   while (( i <= attempts )); do
     last_pm2_status="$(detect_pm2_status "$pm2_name")"
-    if check_port_listening "$port"; then
+    if verify_port_listen "$port"; then
       last_port_ok="yes"
     else
       last_port_ok="no"
     fi
 
-    if (( http_available == 1 )); then
-      if check_http_ready "$port"; then
-        last_http_ok="yes"
+    if (( has_curl == 1 )); then
+      if verify_http_health "$port"; then
+        last_http_status="yes"
       else
-        last_http_ok="no"
+        last_http_status="no"
       fi
     else
-      last_http_ok="skip"
+      last_http_status="skipped"
     fi
 
-    if [[ "$last_pm2_status" == "online" && "$last_port_ok" == "yes" ]] && { [[ "$last_http_ok" == "yes" ]] || (( http_available == 0 )); }; then
-      BUILD_VERIFY_STATUS="success"
-      BUILD_VERIFY_MESSAGE="PM2 online, port listen, HTTP OK."
-      return 0
+    if [[ "$last_pm2_status" == "online" && "$last_port_ok" == "yes" ]]; then
+      if [[ "$last_http_status" == "yes" ]]; then
+        BUILD_VERIFY_STATUS="online"
+        BUILD_VERIFY_MESSAGE="PM2 online, port listen, HTTP OK."
+        BUILD_HEALTH_STATUS="ok"
+        return 0
+      fi
+      if [[ "$last_http_status" == "skipped" ]]; then
+        BUILD_VERIFY_STATUS="online"
+        BUILD_VERIFY_MESSAGE="PM2 online, port listen, HTTP check dilewati (curl tidak tersedia)."
+        BUILD_HEALTH_STATUS="skipped"
+        return 0
+      fi
     fi
 
     sleep 1
     i=$((i + 1))
   done
 
+  if [[ "$last_pm2_status" == "online" && "$last_port_ok" == "yes" && "$last_http_status" == "no" ]]; then
+    BUILD_VERIFY_STATUS="warning"
+    BUILD_VERIFY_MESSAGE="Service started but HTTP belum merespons di port ${port}."
+    BUILD_HEALTH_STATUS="failed"
+    return 0
+  fi
+
   BUILD_VERIFY_STATUS="failed"
-  BUILD_VERIFY_MESSAGE="PM2=$last_pm2_status, port_listen=$last_port_ok, http=$last_http_ok"
+  BUILD_VERIFY_MESSAGE="PM2=${last_pm2_status}, port_listen=${last_port_ok}, http=${last_http_status}"
+  BUILD_HEALTH_STATUS="failed"
   return 1
 }
 
 verify_runtime_with_feedback() {
-  if (( UI_ENABLED == 1 )) && (( GUM_ENABLED == 1 )); then
-    local tmp_file
-    tmp_file="$(mktemp)"
-
-    local q_name q_port q_tmp
-    q_name="$(to_shell_quoted "$BUILD_PM2_NAME")"
-    q_port="$(to_shell_quoted "$BUILD_PORT")"
-    q_tmp="$(to_shell_quoted "$tmp_file")"
-
-    local verify_cmd=""
-    read -r -d '' verify_cmd <<EOF || true
-pm2_name=$q_name
-port=$q_port
-tmp_file=$q_tmp
-status='failed'
-message='Runtime belum tervalidasi.'
-pm2_status='not running'
-port_ok='no'
-http_ok='skip'
-http_available='no'
-if command -v curl >/dev/null 2>&1; then
-  http_available='yes'
-fi
-attempt=1
-while [ \$attempt -le 15 ]; do
-  raw=\$(pm2 describe "\$pm2_name" 2>/dev/null || true)
-  lower=\$(printf '%s\n' "\$raw" | tr '[:upper:]' '[:lower:]')
-  if printf '%s\n' "\$lower" | grep -q 'online'; then
-    pm2_status='online'
-  elif printf '%s\n' "\$lower" | grep -q 'stopped'; then
-    pm2_status='stopped'
-  else
-    pm2_status='not running'
-  fi
-
-  port_ok='no'
-  if command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | awk '{print \$4}' | grep -E "[:.]\${port}\$" >/dev/null 2>&1; then
-    port_ok='yes'
-  elif command -v lsof >/dev/null 2>&1 && lsof -iTCP:"\$port" -sTCP:LISTEN >/dev/null 2>&1; then
-    port_ok='yes'
-  elif (echo >/dev/tcp/127.0.0.1/"\$port") >/dev/null 2>&1; then
-    port_ok='yes'
-  fi
-
-  if [ "\$http_available" = "yes" ]; then
-    http_ok='no'
-    if curl -fsS --max-time 3 "http://127.0.0.1:\$port" >/dev/null 2>&1; then
-      http_ok='yes'
-    fi
-  else
-    http_ok='skip'
-  fi
-
-  if [ "\$pm2_status" = "online" ] && [ "\$port_ok" = "yes" ] && { [ "\$http_ok" = "yes" ] || [ "\$http_available" = "no" ]; }; then
-    status='success'
-    message='PM2 online, port listen, HTTP OK.'
-    break
-  fi
-
-  attempt=\$((attempt + 1))
-  sleep 1
-done
-
-if [ "\$status" != "success" ]; then
-  message="PM2=\$pm2_status, port_listen=\$port_ok, http=\$http_ok"
-fi
-
-printf '%s\t%s\n' "\$status" "\$message" > "\$tmp_file"
-[ "\$status" = "success" ]
-EOF
-
-    if ! run_shell_step "Verifikasi runtime" "$verify_cmd"; then
-      true
-    fi
-
-    IFS=$'\t' read -r BUILD_VERIFY_STATUS BUILD_VERIFY_MESSAGE < "$tmp_file" || true
-    rm -f "$tmp_file"
-    [[ "${BUILD_VERIFY_STATUS:-failed}" == "success" ]]
-    return
-  fi
-
   log_info "Verifikasi runtime..."
-  verify_runtime "$BUILD_PM2_NAME" "$BUILD_PORT"
+  if verify_runtime "$BUILD_PM2_NAME" "$BUILD_PORT"; then
+    if [[ "$BUILD_VERIFY_STATUS" == "warning" ]]; then
+      printf '[gas] warning: service started but not responding on port %s\n' "$BUILD_PORT" >&2
+    fi
+    return 0
+  fi
+  return 1
 }
-
 
 detect_pm2_status() {
   local pm2_name="$1"
@@ -218,4 +177,3 @@ detect_pm2_status() {
     printf 'not running\n'
   fi
 }
-

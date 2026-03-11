@@ -294,3 +294,18 @@ package_has_script() {
   node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.exit(p.scripts&&p.scripts[process.argv[2]]?0:1)" "$PROJECT_DIR/package.json" "$script" >/dev/null 2>&1
 }
 
+detect_package_manager() {
+  if [[ -f "$PROJECT_DIR/pnpm-lock.yaml" ]]; then
+    printf 'pnpm\n'
+    return
+  fi
+  if [[ -f "$PROJECT_DIR/yarn.lock" ]]; then
+    printf 'yarn\n'
+    return
+  fi
+  if [[ -f "$PROJECT_DIR/package-lock.json" || -f "$PROJECT_DIR/npm-shrinkwrap.json" ]]; then
+    printf 'npm\n'
+    return
+  fi
+  printf 'npm\n'
+}

@@ -11,13 +11,55 @@ maybe_git_pull() {
   fi
 }
 
+extract_git_changed_files() {
+  local before_head="$1"
+  local after_head="$2"
+  local changed=""
+
+  if [[ -n "$before_head" && -n "$after_head" && "$before_head" != "$after_head" ]]; then
+    changed="$(git diff --name-only "$before_head" "$after_head" 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$changed" ]]; then
+    changed="$(git diff --name-only 'HEAD@{1}' HEAD 2>/dev/null || true)"
+  fi
+
+  printf '%s\n' "$changed"
+}
+
 execute_git_pull_if_needed() {
-  if [[ "$BUILD_GIT_PULL" == "yes" ]]; then
-    require_command git "git tidak ditemukan. Install git dulu."
-    log_info "Menjalankan git pull..."
-    if ! git pull; then
-      log_warn "git pull gagal. Mungkin folder ini bukan root repo git, atau root repo ada di parent."
-    fi
+  BUILD_GIT_PULL_SUCCESS=0
+  BUILD_GIT_CHANGED_FILES=""
+
+  if [[ "$BUILD_GIT_PULL" != "yes" ]]; then
+    return
+  fi
+
+  require_command git "git tidak ditemukan. Install git dulu."
+
+  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    log_warn "git pull dilewati. Folder ini bukan working tree git."
+    return
+  fi
+
+  local before_head=""
+  local after_head=""
+  before_head="$(git rev-parse HEAD 2>/dev/null || true)"
+
+  log_info "Menjalankan git pull..."
+  if ! git pull; then
+    log_warn "git pull gagal. Mungkin folder ini bukan root repo git, atau root repo ada di parent."
+    return
+  fi
+
+  BUILD_GIT_PULL_SUCCESS=1
+  after_head="$(git rev-parse HEAD 2>/dev/null || true)"
+  BUILD_GIT_CHANGED_FILES="$(extract_git_changed_files "$before_head" "$after_head")"
+
+  if [[ -n "$BUILD_GIT_CHANGED_FILES" ]]; then
+    log_info "File berubah setelah git pull terdeteksi."
+  else
+    log_info "Tidak ada perubahan file setelah git pull."
   fi
 }
 
@@ -104,12 +146,196 @@ sanitize_binary_name() {
   printf '%s\n' "$name"
 }
 
+has_changed_file() {
+  local file_name="$1"
+  [[ -n "$BUILD_GIT_CHANGED_FILES" ]] || return 1
+  printf '%s\n' "$BUILD_GIT_CHANGED_FILES" | grep -Eq "(^|/)${file_name}$"
+}
+
+needs_node_install() {
+  [[ -f "$PROJECT_DIR/package.json" ]] || return 1
+
+  case "$BUILD_INSTALL_DEPS" in
+    yes) return 0 ;;
+    no) return 1 ;;
+    auto)
+      if (( FORCE_NODE_INSTALL == 1 )); then
+        return 0
+      fi
+
+      if [[ ! -d "$PROJECT_DIR/node_modules" ]]; then
+        return 0
+      fi
+
+      if (( BUILD_GIT_PULL_SUCCESS == 1 )) && { has_changed_file "package.json" || has_changed_file "package-lock.json" || has_changed_file "npm-shrinkwrap.json" || has_changed_file "yarn.lock" || has_changed_file "pnpm-lock.yaml"; }; then
+        return 0
+      fi
+      return 1
+      ;;
+    *)
+      die "Nilai --install-deps harus auto|yes|no"
+      ;;
+  esac
+}
+
+needs_go_mod_tidy() {
+  [[ -f "$PROJECT_DIR/go.mod" ]] || return 1
+
+  case "$BUILD_INSTALL_DEPS" in
+    yes) return 0 ;;
+    no) return 1 ;;
+    auto)
+      if (( FORCE_GO_TIDY == 1 )); then
+        return 0
+      fi
+
+      if (( BUILD_GIT_PULL_SUCCESS == 1 )) && { has_changed_file "go.mod" || has_changed_file "go.sum"; }; then
+        return 0
+      fi
+      return 1
+      ;;
+    *)
+      die "Nilai --install-deps harus auto|yes|no"
+      ;;
+  esac
+}
+
+run_dependency_install() {
+  local target="$1"
+
+  case "$target" in
+    node)
+      if (( BUILD_NODE_DEPS_INSTALLED == 1 )); then
+        return 0
+      fi
+
+      local manager=""
+      manager="$(detect_package_manager)"
+
+      local cmd=""
+      case "$manager" in
+        pnpm)
+          require_command pnpm "pnpm-lock.yaml terdeteksi tapi pnpm tidak ditemukan. Install pnpm atau ubah lockfile."
+          cmd="pnpm install"
+          ;;
+        yarn)
+          require_command yarn "yarn.lock terdeteksi tapi yarn tidak ditemukan. Install yarn atau ubah lockfile."
+          cmd="yarn install"
+          ;;
+        npm)
+          require_command npm "npm tidak ditemukan. Install npm dulu."
+          cmd="npm install"
+          ;;
+        *)
+          die "Package manager tidak dikenali: $manager"
+          ;;
+      esac
+
+      local q_dir
+      q_dir="$(to_shell_quoted "$PROJECT_DIR")"
+      run_shell_step "Install dependency Node (${manager})" "cd $q_dir && $cmd" || return 1
+
+      BUILD_NODE_DEPS_INSTALLED=1
+      BUILD_INSTALL_RAN="yes"
+      return 0
+      ;;
+    go)
+      if (( BUILD_GO_DEPS_RAN == 1 )); then
+        return 0
+      fi
+
+      require_command go "Go tidak ditemukan. Install Go dulu."
+      local q_dir
+      q_dir="$(to_shell_quoted "$PROJECT_DIR")"
+      run_shell_step "Sinkronisasi module Go (go mod tidy)" "cd $q_dir && go mod tidy" || return 1
+
+      BUILD_GO_DEPS_RAN=1
+      BUILD_INSTALL_RAN="yes"
+      return 0
+      ;;
+    *)
+      die "Target dependency install tidak dikenal: $target"
+      ;;
+  esac
+}
+
+run_step_capture_failure() {
+  local title="$1"
+  local command_text="$2"
+  local output_file="$3"
+
+  local q_out
+  q_out="$(to_shell_quoted "$output_file")"
+  run_shell_step "$title" "$command_text >$q_out 2>&1"
+}
+
+is_node_dependency_error() {
+  local output_file="$1"
+  grep -Eqi 'MODULE_NOT_FOUND|ERR_MODULE_NOT_FOUND|Cannot find module|Cannot find package|command not found|sh: .*: not found|missing dependencies|npm ERR! code ELSPROBLEMS' "$output_file"
+}
+
+is_go_dependency_error() {
+  local output_file="$1"
+  grep -Eqi 'no required module provides package|missing go.sum entry|go: updates to go.mod needed|cannot find module providing package' "$output_file"
+}
+
+retry_build_if_needed() {
+  local target="$1"
+  local step_title="$2"
+  local command_text="$3"
+  local fail_message="$4"
+
+  local output_file
+  output_file="$(mktemp)"
+
+  if run_step_capture_failure "$step_title" "$command_text" "$output_file"; then
+    rm -f "$output_file"
+    return 0
+  fi
+
+  local should_retry=0
+  case "$target" in
+    node)
+      if [[ "$BUILD_INSTALL_DEPS" != "no" ]] && (( BUILD_NODE_DEPS_INSTALLED == 0 )) && is_node_dependency_error "$output_file"; then
+        FORCE_NODE_INSTALL=1
+        if run_dependency_install node; then
+          should_retry=1
+        fi
+      fi
+      ;;
+    go)
+      if [[ "$BUILD_INSTALL_DEPS" != "no" ]] && (( BUILD_GO_DEPS_RAN == 0 )) && is_go_dependency_error "$output_file"; then
+        FORCE_GO_TIDY=1
+        if run_dependency_install go; then
+          should_retry=1
+        fi
+      fi
+      ;;
+  esac
+
+  if (( should_retry == 1 )); then
+    log_warn "$fail_message Mencoba ulang sekali setelah install dependency."
+    if run_step_capture_failure "$step_title (retry)" "$command_text" "$output_file"; then
+      rm -f "$output_file"
+      return 0
+    fi
+  fi
+
+  cat "$output_file" >&2 || true
+  rm -f "$output_file"
+  return 1
+}
+
 build_go_project() {
   require_command go "Go tidak ditemukan. Install Go dulu."
   require_command pm2 "PM2 tidak ditemukan. Install PM2 dulu."
   BUILD_RUN_MODE="direct"
   BUILD_STRATEGY_FINAL="go-binary"
   BUILD_GO_VERSION="$(go version | awk '{print $3}')"
+
+  if needs_go_mod_tidy; then
+    run_dependency_install go || die "go mod tidy gagal."
+  fi
 
   if (( GO_SHOULD_UPDATE_ENV == 1 )); then
     upsert_env_port "$BUILD_ENV_FILE" "$BUILD_PORT"
@@ -124,10 +350,14 @@ build_go_project() {
   local output_bin="$output_dir/$bin_name"
 
   log_info "Build Go target: $BUILD_GO_TARGET"
-  (
-    cd "$PROJECT_DIR"
-    go build -o "$output_bin" "$BUILD_GO_TARGET"
-  )
+  local q_dir q_bin q_target
+  q_dir="$(to_shell_quoted "$PROJECT_DIR")"
+  q_bin="$(to_shell_quoted "$output_bin")"
+  q_target="$(to_shell_quoted "$BUILD_GO_TARGET")"
+
+  if ! retry_build_if_needed "go" "Build binary Go" "cd $q_dir && go build -o $q_bin $q_target" "go build gagal."; then
+    die "go build gagal."
+  fi
 
   BUILD_START_FILE="$output_bin"
   run_pm2_direct "$output_bin" "$BUILD_PM2_NAME" "$BUILD_PORT"
@@ -217,7 +447,7 @@ ensure_node_build_ready() {
   fi
 
   if [[ ! -f "$PROJECT_DIR/package.json" ]]; then
-    log_warn "package.json tidak ditemukan. Skip npm install/build."
+    log_warn "package.json tidak ditemukan. Skip install/build Node."
     SVELTE_BUILD_DONE=1
     return 0
   fi
@@ -225,19 +455,20 @@ ensure_node_build_ready() {
   BUILD_NODE_VERSION="$(node -v 2>/dev/null || true)"
   BUILD_NPM_VERSION="$(npm -v 2>/dev/null || true)"
 
-  local q_dir
-  q_dir="$(to_shell_quoted "$PROJECT_DIR")"
-
-  run_shell_step "Menjalankan npm install" "cd $q_dir && npm install" || {
-    SVELTE_LAST_ERROR="npm install gagal."
-    return 1
-  }
-
-  if package_has_script "build"; then
-    run_shell_step "Menjalankan npm run build" "cd $q_dir && npm run build" || {
-      SVELTE_LAST_ERROR="npm run build gagal."
+  if needs_node_install; then
+    run_dependency_install node || {
+      SVELTE_LAST_ERROR="Install dependency Node gagal."
       return 1
     }
+  fi
+
+  if package_has_script "build"; then
+    local q_dir
+    q_dir="$(to_shell_quoted "$PROJECT_DIR")"
+    if ! retry_build_if_needed "node" "Menjalankan npm run build" "cd $q_dir && npm run build" "npm run build gagal."; then
+      SVELTE_LAST_ERROR="npm run build gagal."
+      return 1
+    fi
   else
     log_info "Script build tidak ditemukan di package.json, skip npm run build."
   fi
@@ -332,7 +563,7 @@ write_ecosystem_file() {
   if [[ "$mode" == "node-entry" ]]; then
     local rel_start="$start_file"
     rel_start="${rel_start#"$PROJECT_DIR/"}"
-    cat > "$ecosystem_file" <<EOF
+    cat > "$ecosystem_file" <<EOF2
 module.exports = {
   apps: [
     {
@@ -347,9 +578,9 @@ module.exports = {
     }
   ]
 };
-EOF
+EOF2
   elif [[ "$mode" == "npm-start" ]]; then
-    cat > "$ecosystem_file" <<EOF
+    cat > "$ecosystem_file" <<EOF2
 module.exports = {
   apps: [
     {
@@ -364,9 +595,9 @@ module.exports = {
     }
   ]
 };
-EOF
+EOF2
   else
-    cat > "$ecosystem_file" <<EOF
+    cat > "$ecosystem_file" <<EOF2
 module.exports = {
   apps: [
     {
@@ -381,7 +612,7 @@ module.exports = {
     }
   ]
 };
-EOF
+EOF2
   fi
 
   printf '%s\n' "$ecosystem_file"
@@ -571,6 +802,15 @@ parse_build_args() {
         [[ -n "$BUILD_GIT_PULL" ]] || die "Nilai --git-pull harus yes atau no."
         shift
         ;;
+      --install-deps)
+        [[ $# -ge 2 ]] || die "Flag --install-deps butuh nilai auto|yes|no."
+        BUILD_INSTALL_DEPS="$2"
+        shift 2
+        ;;
+      --install-deps=*)
+        BUILD_INSTALL_DEPS="${1#*=}"
+        shift
+        ;;
       --run-mode)
         [[ $# -ge 2 ]] || die "Flag --run-mode butuh nilai ecosystem|direct."
         BUILD_RUN_MODE="$2"
@@ -626,6 +866,11 @@ parse_build_args() {
         ;;
     esac
   done
+
+  case "$BUILD_INSTALL_DEPS" in
+    auto|yes|no) ;;
+    *) die "Nilai --install-deps harus auto|yes|no." ;;
+  esac
 }
 
 
@@ -673,6 +918,7 @@ print_build_plan() {
   printf '  Stack     : %s\n' "${BUILD_STACK_LABEL:-Unknown}"
   printf '  Type      : %s\n' "$BUILD_TYPE"
   printf '  Git pull  : %s\n' "${BUILD_GIT_PULL:-no}"
+  printf '  Deps mode : %s\n' "${BUILD_INSTALL_DEPS:-auto}"
   printf '  PM2 name  : %s\n' "$BUILD_PM2_NAME"
   printf '  Port      : %s\n' "$BUILD_PORT"
   if [[ "$BUILD_TYPE" == "node-web" ]]; then
@@ -721,7 +967,15 @@ run_build() {
   BUILD_SVELTE_STRATEGY_FINAL=""
   BUILD_VERIFY_STATUS="not_checked"
   BUILD_VERIFY_MESSAGE="-"
+  BUILD_HEALTH_STATUS="skipped"
   BUILD_SVELTE_ECOSYSTEM_MODE="not-used"
+  BUILD_INSTALL_RAN="no"
+  BUILD_GIT_CHANGED_FILES=""
+  BUILD_GIT_PULL_SUCCESS=0
+  BUILD_NODE_DEPS_INSTALLED=0
+  BUILD_GO_DEPS_RAN=0
+  FORCE_NODE_INSTALL=0
+  FORCE_GO_TIDY=0
   SVELTE_BUILD_DONE=0
   SVELTE_LAST_ERROR=""
 
@@ -751,17 +1005,5 @@ run_build() {
   esac
 
   write_metadata
-
-  printf '\n'
-  printf 'Build selesai.\n'
-  printf 'Folder      : %s\n' "$PROJECT_DIR"
-  printf 'Stack       : %s\n' "${BUILD_STACK_LABEL:-Unknown}"
-  printf 'Type        : %s\n' "$BUILD_TYPE"
-  printf 'Strategy    : %s\n' "${BUILD_STRATEGY_FINAL:-${BUILD_STRATEGY:-go-binary}}"
-  printf 'PM2 name    : %s\n' "$BUILD_PM2_NAME"
-  printf 'Port        : %s\n' "$BUILD_PORT"
-  printf 'Status      : %s\n' "${BUILD_VERIFY_STATUS:-unknown}"
-  printf 'Verify msg  : %s\n' "${BUILD_VERIFY_MESSAGE:--}"
-  printf 'Ecosystem   : %s\n' "${BUILD_ECOSYSTEM_STATE:-not-used}"
+  print_build_summary
 }
-
