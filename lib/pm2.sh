@@ -168,6 +168,7 @@ detect_pm2_status() {
     /status/ {
       if ($0 ~ /online/)  { print "online";  exit }
       if ($0 ~ /stopped/) { print "stopped"; exit }
+      if ($0 ~ /errored/) { print "errored"; exit }
     }
   ')"
 

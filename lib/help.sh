@@ -9,6 +9,11 @@ Perintah:
   gas build [options]
   gas info
   gas list
+  gas restart [pm2-name]
+  gas logs [pm2-name]
+  gas rebuild [options]
+  gas remove [options]
+  gas doctor [options]
   gas help
 
 Build options:
@@ -39,6 +44,11 @@ Detail per command:
   gas build --help
   gas info --help
   gas list --help
+  gas restart --help
+  gas logs --help
+  gas rebuild --help
+  gas remove --help
+  gas doctor --help
 EOF
 }
 
@@ -47,8 +57,14 @@ print_info_help_plain() {
 gas info - Tampilkan metadata build project saat ini
 
 Yang ditampilkan:
-  - Metadata build berdasarkan current directory
-  - Status PM2 (online, stopped, not running)
+  - Folder
+  - Stack
+  - PM2 name
+  - Port
+  - Strategy
+  - Deps mode
+  - Last build
+  - PM2 status (online, stopped, errored, not running)
 
 Opsi:
   --help
@@ -61,11 +77,94 @@ print_list_help_plain() {
 gas list - Tampilkan daftar semua project yang pernah dibuild
 
 Yang ditampilkan:
-  - Project
-  - Type
   - PM2 name
+  - Stack
   - Port
   - Updated
+  - Path
+
+Opsi:
+  --help
+  --no-ui
+EOF
+}
+
+print_restart_help_plain() {
+  cat <<EOF
+gas restart - Restart PM2 app
+
+Pemakaian:
+  gas restart
+  gas restart <pm2-name>
+
+Perilaku:
+  - Default: ambil PM2 name dari metadata folder saat ini
+  - Jika argumen pm2-name diberikan, nama itu yang dipakai
+
+Opsi:
+  --help
+  --no-ui
+EOF
+}
+
+print_logs_help_plain() {
+  cat <<EOF
+gas logs - Lihat log PM2 app
+
+Pemakaian:
+  gas logs
+  gas logs <pm2-name>
+
+Perilaku:
+  - Default: ambil PM2 name dari metadata folder saat ini
+  - Jika argumen pm2-name diberikan, nama itu yang dipakai
+
+Opsi:
+  --help
+  --no-ui
+EOF
+}
+
+print_rebuild_help_plain() {
+  cat <<EOF
+gas rebuild - Rebuild project memakai metadata terakhir
+
+Yang dilakukan:
+  - Load stack/strategy/port/pm2-name dari metadata project saat ini
+  - Jalankan ulang flow gas build dengan konfigurasi tersebut
+  - Default git pull: yes jika folder git repo, kalau tidak no
+
+Opsi:
+  --git-pull yes|no
+  --no-ui
+  --yes
+  --help
+EOF
+}
+
+print_remove_help_plain() {
+  cat <<EOF
+gas remove - Hapus PM2 app + metadata project saat ini
+
+Yang dilakukan:
+  - Ambil PM2 name dari metadata folder saat ini
+  - Konfirmasi dulu (mode interaktif)
+  - pm2 delete <pm2-name>
+  - Hapus metadata project dari database gas
+
+Opsi:
+  --no-ui
+  --yes
+  --help
+EOF
+}
+
+print_doctor_help_plain() {
+  cat <<EOF
+gas doctor - Cek dependency environment server
+
+Yang dicek:
+  node, npm, pnpm, yarn, go, pm2, sqlite3, gum, git
 
 Opsi:
   --help
@@ -193,6 +292,11 @@ Daftar command:
   build    Build project Go/Node web dengan stack detect + strategy
   info     Lihat metadata build project pada folder saat ini
   list     Lihat daftar semua project yang pernah dibuild
+  restart  Restart PM2 app dari metadata atau pm2-name manual
+  logs     Tampilkan log PM2 app dari metadata atau pm2-name manual
+  rebuild  Build ulang pakai metadata build terakhir
+  remove   Hapus PM2 app + metadata project saat ini
+  doctor   Cek dependency environment server
   help     Tampilkan panduan lengkap command dan opsi
 
 Untuk detail command:
@@ -209,6 +313,11 @@ print_overview() {
     printf '  build    Build project Go/Node web dengan stack detect + strategy\n'
     printf '  info     Lihat metadata build project pada folder saat ini\n'
     printf '  list     Lihat daftar semua project yang pernah dibuild\n'
+    printf '  restart  Restart PM2 app dari metadata atau pm2-name manual\n'
+    printf '  logs     Tampilkan log PM2 app dari metadata atau pm2-name manual\n'
+    printf '  rebuild  Build ulang pakai metadata build terakhir\n'
+    printf '  remove   Hapus PM2 app + metadata project saat ini\n'
+    printf '  doctor   Cek dependency environment server\n'
     printf '  help     Tampilkan panduan lengkap command dan opsi\n'
     printf '\n'
     gum style --italic "Untuk detail command: gas help atau gas <command> --help"
@@ -227,6 +336,11 @@ print_help() {
     printf '  gas build [options]\n'
     printf '  gas info\n'
     printf '  gas list\n'
+    printf '  gas restart [pm2-name]\n'
+    printf '  gas logs [pm2-name]\n'
+    printf '  gas rebuild [options]\n'
+    printf '  gas remove [options]\n'
+    printf '  gas doctor [options]\n'
     printf '  gas help\n'
     printf '\n'
     gum style --bold "Build options"
@@ -251,6 +365,23 @@ print_help() {
     printf '  gas build\n'
     printf '  gas build --no-ui --type go --pm2-name diraaax-api --git-pull yes --yes\n'
     printf '  gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --strategy auto --git-pull no --yes\n'
+    printf '  gas info\n'
+    printf '  gas list\n'
+    printf '  gas restart\n'
+    printf '  gas logs marbot-web\n'
+    printf '  gas rebuild --yes\n'
+    printf '  gas remove --yes\n'
+    printf '  gas doctor\n'
+    printf '\n'
+    gum style --bold "Detail per command"
+    printf '  gas build --help\n'
+    printf '  gas info --help\n'
+    printf '  gas list --help\n'
+    printf '  gas restart --help\n'
+    printf '  gas logs --help\n'
+    printf '  gas rebuild --help\n'
+    printf '  gas remove --help\n'
+    printf '  gas doctor --help\n'
     return
   fi
 

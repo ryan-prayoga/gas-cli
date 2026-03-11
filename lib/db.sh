@@ -23,7 +23,7 @@ ensure_metadata_db() {
   local db_path="$config_dir/apps.db"
   mkdir -p "$config_dir"
 
-  sqlite3 "$db_path" "
+  sqlite3 -cmd ".timeout 3000" "$db_path" "
     CREATE TABLE IF NOT EXISTS apps (
       project_dir TEXT PRIMARY KEY,
       app_type TEXT,
@@ -36,6 +36,7 @@ ensure_metadata_db() {
       npm_version TEXT,
       go_version TEXT,
       svelte_strategy TEXT,
+      deps_mode TEXT,
       verify_status TEXT,
       verify_message TEXT,
       updated_at TEXT
@@ -54,6 +55,7 @@ ensure_metadata_db() {
     "npm_version|TEXT"
     "go_version|TEXT"
     "svelte_strategy|TEXT"
+    "deps_mode|TEXT"
     "verify_status|TEXT"
     "verify_message|TEXT"
     "updated_at|TEXT"
@@ -64,9 +66,9 @@ ensure_metadata_db() {
     local column_name="${item%%|*}"
     local column_type="${item#*|}"
     local exists_count
-    exists_count="$(sqlite3 "$db_path" "SELECT COUNT(*) FROM pragma_table_info('apps') WHERE name='${column_name}';")"
+    exists_count="$(sqlite3 -cmd ".timeout 3000" "$db_path" "SELECT COUNT(*) FROM pragma_table_info('apps') WHERE name='${column_name}';")"
     if [[ "$exists_count" == "0" ]]; then
-      sqlite3 "$db_path" "ALTER TABLE apps ADD COLUMN ${column_name} ${column_type};"
+      sqlite3 -cmd ".timeout 3000" "$db_path" "ALTER TABLE apps ADD COLUMN ${column_name} ${column_type};"
     fi
   done
 
@@ -88,26 +90,39 @@ require_sqlite3() {
 db_has_apps_table() {
   local db_path="$1"
   local count
-  count="$(sqlite3 "$db_path" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='apps';" 2>/dev/null || true)"
+  count="$(sqlite3 -cmd ".timeout 3000" "$db_path" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='apps';" 2>/dev/null || true)"
   [[ "$count" == "1" ]]
 }
 
 query_info_row() {
   local db_path="$1"
   local project_dir="$2"
-  sqlite3 -separator $'\t' "$db_path" "
+  sqlite3 -cmd ".timeout 3000" -separator $'\t' "$db_path" "
     SELECT
       IFNULL(project_dir, ''),
       IFNULL(app_type, ''),
       IFNULL(pm2_name, ''),
       IFNULL(port, ''),
-      IFNULL(run_mode, ''),
-      IFNULL(env_file, ''),
-      IFNULL(start_file, ''),
-      IFNULL(node_version, ''),
-      IFNULL(npm_version, ''),
-      IFNULL(go_version, ''),
+      IFNULL(svelte_strategy, ''),
+      IFNULL(deps_mode, ''),
       IFNULL(updated_at, '')
+    FROM apps
+    WHERE project_dir = $(sql_literal "$project_dir")
+    LIMIT 1;
+  "
+}
+
+query_build_config_row() {
+  local db_path="$1"
+  local project_dir="$2"
+  sqlite3 -cmd ".timeout 3000" -separator $'\t' "$db_path" "
+    SELECT
+      IFNULL(app_type, ''),
+      IFNULL(pm2_name, ''),
+      IFNULL(port, ''),
+      IFNULL(svelte_strategy, ''),
+      IFNULL(deps_mode, ''),
+      IFNULL(run_mode, '')
     FROM apps
     WHERE project_dir = $(sql_literal "$project_dir")
     LIMIT 1;
@@ -116,16 +131,22 @@ query_info_row() {
 
 query_list_rows() {
   local db_path="$1"
-  sqlite3 -separator $'\t' "$db_path" "
+  sqlite3 -cmd ".timeout 3000" -separator $'\t' "$db_path" "
     SELECT
-      IFNULL(project_dir, ''),
-      IFNULL(app_type, ''),
       IFNULL(pm2_name, ''),
+      IFNULL(app_type, ''),
       IFNULL(port, ''),
-      IFNULL(updated_at, '')
+      IFNULL(updated_at, ''),
+      IFNULL(project_dir, '')
     FROM apps
     ORDER BY updated_at DESC;
   "
+}
+
+delete_project_metadata() {
+  local db_path="$1"
+  local project_dir="$2"
+  sqlite3 -cmd ".timeout 3000" "$db_path" "DELETE FROM apps WHERE project_dir = $(sql_literal "$project_dir");"
 }
 
 
@@ -142,7 +163,7 @@ write_metadata() {
   local project_dir_sql app_type_sql port_sql pm2_name_sql
   local env_file_sql start_file_sql run_mode_sql
   local node_version_sql npm_version_sql go_version_sql
-  local svelte_strategy_sql verify_status_sql verify_message_sql updated_at_sql
+  local svelte_strategy_sql deps_mode_sql verify_status_sql verify_message_sql updated_at_sql
 
   project_dir_sql="$(sql_literal "$PROJECT_DIR")"
   if [[ "$BUILD_TYPE" == "node-web" && -n "$BUILD_STACK_ID" ]]; then
@@ -159,11 +180,12 @@ write_metadata() {
   npm_version_sql="$(sql_literal "$BUILD_NPM_VERSION")"
   go_version_sql="$(sql_literal "$BUILD_GO_VERSION")"
   svelte_strategy_sql="$(sql_literal "${BUILD_STRATEGY_FINAL:-$BUILD_SVELTE_STRATEGY_FINAL}")"
+  deps_mode_sql="$(sql_literal "$BUILD_INSTALL_DEPS")"
   verify_status_sql="$(sql_literal "$BUILD_VERIFY_STATUS")"
   verify_message_sql="$(sql_literal "$BUILD_VERIFY_MESSAGE")"
   updated_at_sql="$(sql_literal "$now_utc")"
 
-  sqlite3 "$db_path" "
+  sqlite3 -cmd ".timeout 3000" "$db_path" "
     BEGIN TRANSACTION;
     DELETE FROM apps WHERE project_dir = ${project_dir_sql};
     INSERT INTO apps (
@@ -178,6 +200,7 @@ write_metadata() {
       npm_version,
       go_version,
       svelte_strategy,
+      deps_mode,
       verify_status,
       verify_message,
       updated_at
@@ -193,6 +216,7 @@ write_metadata() {
       ${npm_version_sql},
       ${go_version_sql},
       ${svelte_strategy_sql},
+      ${deps_mode_sql},
       ${verify_status_sql},
       ${verify_message_sql},
       ${updated_at_sql}
@@ -202,4 +226,3 @@ write_metadata() {
 
   log_info "Metadata global disimpan di $db_path"
 }
-
