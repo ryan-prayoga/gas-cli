@@ -136,18 +136,9 @@ ui_select() {
 ui_input() {
   local prompt="$1"
   local default_value="${2:-}"
-
-  if (( GUM_ENABLED == 1 )); then
-    local value=""
-    if value="$(gum input --prompt "$prompt: " --value "$default_value")"; then
-      if [[ -z "$value" ]]; then
-        printf '%s\n' "$default_value"
-      else
-        printf '%s\n' "$value"
-      fi
-      return
-    fi
-  fi
+  # NOTE:
+  # gum input terlihat duplikat/kosong di beberapa terminal (tmux/ssh env tertentu).
+  # Untuk stabilitas, input teks pakai prompt Bash biasa.
 
   if [[ -n "$default_value" ]]; then
     printf '%s [%s]: ' "$prompt" "$default_value" >&2
