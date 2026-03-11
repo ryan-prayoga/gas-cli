@@ -16,6 +16,9 @@ BUILD_PORT=""
 BUILD_PM2_NAME=""
 BUILD_GIT_PULL=""
 BUILD_RUN_MODE=""
+BUILD_SVELTE_STRATEGY=""
+BUILD_SVELTE_STRATEGY_FINAL=""
+BUILD_REUSE_ECOSYSTEM=""
 
 BUILD_ENV_FILE=""
 BUILD_START_FILE=""
@@ -23,8 +26,13 @@ BUILD_GO_TARGET=""
 BUILD_NODE_VERSION=""
 BUILD_NPM_VERSION=""
 BUILD_GO_VERSION=""
+BUILD_VERIFY_STATUS=""
+BUILD_VERIFY_MESSAGE=""
+BUILD_SVELTE_ECOSYSTEM_MODE=""
 GO_DETECTED_PORT=""
 GO_SHOULD_UPDATE_ENV=0
+SVELTE_BUILD_DONE=0
+SVELTE_LAST_ERROR=""
 
 log_info() {
   printf '[%s] %s\n' "$CLI_NAME" "$*" >&2
@@ -175,6 +183,22 @@ require_command() {
   local cmd="$1"
   local message="$2"
   command_exists "$cmd" || die "$message"
+}
+
+run_shell_step() {
+  local title="$1"
+  local command_text="$2"
+
+  if (( UI_ENABLED == 1 )) && (( GUM_ENABLED == 1 )); then
+    gum spin --spinner dot --title "$title" -- bash -lc "$command_text"
+  else
+    log_info "$title"
+    bash -lc "$command_text"
+  fi
+}
+
+to_shell_quoted() {
+  printf '%q' "$1"
 }
 
 extract_port_from_env_file() {
@@ -520,22 +544,61 @@ resolve_svelte_port() {
   validate_port "$BUILD_PORT" || die "Port tidak valid: $BUILD_PORT"
 }
 
-resolve_svelte_run_mode() {
-  if [[ -n "$BUILD_RUN_MODE" ]]; then
+resolve_svelte_strategy() {
+  if [[ -n "${BUILD_RUN_MODE:-}" ]]; then
     case "$BUILD_RUN_MODE" in
-      ecosystem|direct) return ;;
-      *) die "Nilai --run-mode harus ecosystem atau direct" ;;
+      direct|ecosystem) ;;
+      *) die "Nilai --run-mode harus ecosystem atau direct." ;;
     esac
   fi
 
+  if [[ -n "$BUILD_SVELTE_STRATEGY" ]]; then
+    case "$BUILD_SVELTE_STRATEGY" in
+      auto|preview|direct|ecosystem|adapter-node) return ;;
+      *) die "Nilai --svelte-strategy harus auto|preview|direct|ecosystem|adapter-node" ;;
+    esac
+  fi
+
+  # Backward compatibility untuk flag lama --run-mode.
+  case "${BUILD_RUN_MODE:-}" in
+    direct) BUILD_SVELTE_STRATEGY="direct"; return ;;
+    ecosystem) BUILD_SVELTE_STRATEGY="ecosystem"; return ;;
+  esac
+
   if (( UI_ENABLED == 1 )) && (( ASSUME_YES == 0 )); then
-    BUILD_RUN_MODE="$(ui_select 'Pilih run mode PM2' 'ecosystem' ecosystem direct)"
+    BUILD_SVELTE_STRATEGY="$(ui_select 'Pilih Svelte strategy' 'auto' auto preview direct ecosystem adapter-node)"
   else
-    BUILD_RUN_MODE="direct"
+    BUILD_SVELTE_STRATEGY="auto"
   fi
 }
 
-detect_svelte_start_file() {
+resolve_reuse_ecosystem() {
+  local ecosystem_file="$PROJECT_DIR/ecosystem.config.cjs"
+  if [[ ! -f "$ecosystem_file" ]]; then
+    BUILD_REUSE_ECOSYSTEM="no"
+    return
+  fi
+
+  if [[ -n "$BUILD_REUSE_ECOSYSTEM" ]]; then
+    case "$BUILD_REUSE_ECOSYSTEM" in
+      yes|no) return ;;
+      *) die "Nilai --reuse-ecosystem harus yes atau no" ;;
+    esac
+  fi
+
+  if [[ "$BUILD_SVELTE_STRATEGY" != "ecosystem" && "$BUILD_SVELTE_STRATEGY" != "auto" ]]; then
+    BUILD_REUSE_ECOSYSTEM="no"
+    return
+  fi
+
+  if (( UI_ENABLED == 1 )) && (( ASSUME_YES == 0 )); then
+    BUILD_REUSE_ECOSYSTEM="$(ui_select 'Ditemukan ecosystem.config.cjs. Reuse file existing?' 'yes' yes no)"
+  else
+    BUILD_REUSE_ECOSYSTEM="yes"
+  fi
+}
+
+detect_svelte_direct_entry() {
   local direct_file="$PROJECT_DIR/build/index.js"
   local fallback_file="$PROJECT_DIR/.svelte-kit/output/server/index.js"
 
@@ -550,16 +613,186 @@ detect_svelte_start_file() {
   return 1
 }
 
+has_valid_ecosystem_file() {
+  local ecosystem_file="$PROJECT_DIR/ecosystem.config.cjs"
+  [[ -f "$ecosystem_file" ]] || return 1
+  grep -Eq 'apps[[:space:]]*:' "$ecosystem_file"
+}
+
+detect_svelte_config_file() {
+  if [[ -f "$PROJECT_DIR/svelte.config.js" ]]; then
+    printf '%s\n' "$PROJECT_DIR/svelte.config.js"
+    return
+  fi
+  if [[ -f "$PROJECT_DIR/svelte.config.ts" ]]; then
+    printf '%s\n' "$PROJECT_DIR/svelte.config.ts"
+    return
+  fi
+}
+
+project_uses_adapter_node() {
+  if [[ -f "$PROJECT_DIR/package.json" ]] && grep -Eq '@sveltejs/adapter-node' "$PROJECT_DIR/package.json"; then
+    return 0
+  fi
+  local config_file=""
+  config_file="$(detect_svelte_config_file || true)"
+  if [[ -n "$config_file" ]] && grep -Eq '@sveltejs/adapter-node' "$config_file"; then
+    return 0
+  fi
+  return 1
+}
+
+project_uses_adapter_auto() {
+  local config_file=""
+  config_file="$(detect_svelte_config_file || true)"
+  [[ -n "$config_file" ]] || return 1
+  grep -Eq '@sveltejs/adapter-auto' "$config_file"
+}
+
+prepare_adapter_node_config() {
+  if project_uses_adapter_node; then
+    return 0
+  fi
+
+  local config_file=""
+  config_file="$(detect_svelte_config_file || true)"
+  [[ -n "$config_file" ]] || {
+    SVELTE_LAST_ERROR="svelte.config.js/ts tidak ditemukan. Tidak bisa update adapter-node dengan aman."
+    return 1
+  }
+
+  if ! project_uses_adapter_auto; then
+    SVELTE_LAST_ERROR="Config tidak memakai adapter-auto, transform otomatis ke adapter-node tidak aman."
+    return 1
+  fi
+
+  if (( UI_ENABLED == 1 )) && (( ASSUME_YES == 0 )); then
+    local do_update=""
+    do_update="$(ui_select 'Project belum pakai adapter-node. Update config ke adapter-node?' 'no' yes no)"
+    if [[ "$do_update" != "yes" ]]; then
+      SVELTE_LAST_ERROR="Adapter-node belum aktif karena update config dibatalkan."
+      return 1
+    fi
+  elif (( ASSUME_YES == 0 )); then
+    SVELTE_LAST_ERROR="Adapter-node belum aktif. Jalankan dengan --yes atau update config manual."
+    return 1
+  fi
+
+  local backup_file="${config_file}.gas.bak.$(date +%Y%m%d%H%M%S)"
+  cp "$config_file" "$backup_file"
+
+  local tmp_file
+  tmp_file="$(mktemp)"
+  sed "s|@sveltejs/adapter-auto|@sveltejs/adapter-node|g" "$config_file" > "$tmp_file"
+
+  if cmp -s "$config_file" "$tmp_file"; then
+    rm -f "$tmp_file"
+    SVELTE_LAST_ERROR="Transform adapter-node tidak menghasilkan perubahan yang aman. File asli tetap utuh di $backup_file."
+    return 1
+  fi
+
+  mv "$tmp_file" "$config_file"
+
+  local q_dir
+  q_dir="$(to_shell_quoted "$PROJECT_DIR")"
+  if ! run_shell_step "Install @sveltejs/adapter-node" "cd $q_dir && npm install -D @sveltejs/adapter-node"; then
+    SVELTE_LAST_ERROR="Gagal install @sveltejs/adapter-node."
+    return 1
+  fi
+
+  SVELTE_BUILD_DONE=0
+  return 0
+}
+
+ensure_svelte_build_ready() {
+  if (( SVELTE_BUILD_DONE == 1 )); then
+    return 0
+  fi
+
+  BUILD_NODE_VERSION="$(node -v 2>/dev/null || true)"
+  BUILD_NPM_VERSION="$(npm -v 2>/dev/null || true)"
+
+  local q_dir
+  q_dir="$(to_shell_quoted "$PROJECT_DIR")"
+
+  run_shell_step "Menjalankan npm install" "cd $q_dir && npm install" || {
+    SVELTE_LAST_ERROR="npm install gagal."
+    return 1
+  }
+  run_shell_step "Menjalankan npm run build" "cd $q_dir && npm run build" || {
+    SVELTE_LAST_ERROR="npm run build gagal."
+    return 1
+  }
+
+  SVELTE_BUILD_DONE=1
+}
+
+pm2_replace_and_start() {
+  local command_text="$1"
+  local q_name
+  q_name="$(to_shell_quoted "$BUILD_PM2_NAME")"
+  local replace_cmd="if pm2 describe $q_name >/dev/null 2>&1; then pm2 delete $q_name >/dev/null 2>&1 || true; fi; $command_text"
+  run_shell_step "PM2 start/restart ($BUILD_PM2_NAME)" "$replace_cmd"
+}
+
+run_svelte_preview() {
+  ensure_svelte_build_ready || return 1
+
+  local q_name q_dir q_port
+  q_name="$(to_shell_quoted "$BUILD_PM2_NAME")"
+  q_dir="$(to_shell_quoted "$PROJECT_DIR")"
+  q_port="$(to_shell_quoted "$BUILD_PORT")"
+
+  local cmd="PORT=$q_port pm2 start npm --name $q_name --cwd $q_dir -- run preview -- --host 0.0.0.0 --port $q_port"
+  pm2_replace_and_start "$cmd" || {
+    SVELTE_LAST_ERROR="Gagal menjalankan npm run preview via PM2."
+    return 1
+  }
+
+  BUILD_START_FILE="npm run preview -- --host 0.0.0.0 --port $BUILD_PORT"
+  BUILD_RUN_MODE="preview"
+  return 0
+}
+
+run_svelte_direct() {
+  ensure_svelte_build_ready || return 1
+
+  local entry_file=""
+  entry_file="$(detect_svelte_direct_entry || true)"
+  if [[ -z "$entry_file" ]]; then
+    SVELTE_LAST_ERROR="Strategy direct gagal: entry build/index.js atau .svelte-kit/output/server/index.js tidak ditemukan."
+    return 1
+  fi
+
+  local entry_rel="${entry_file#"$PROJECT_DIR/"}"
+  local q_name q_dir q_port q_entry
+  q_name="$(to_shell_quoted "$BUILD_PM2_NAME")"
+  q_dir="$(to_shell_quoted "$PROJECT_DIR")"
+  q_port="$(to_shell_quoted "$BUILD_PORT")"
+  q_entry="$(to_shell_quoted "$entry_rel")"
+
+  local cmd="PORT=$q_port pm2 start node --name $q_name --cwd $q_dir -- $q_entry"
+  pm2_replace_and_start "$cmd" || {
+    SVELTE_LAST_ERROR="Gagal menjalankan entry direct via PM2."
+    return 1
+  }
+
+  BUILD_START_FILE="$entry_file"
+  BUILD_RUN_MODE="direct"
+  return 0
+}
+
 write_ecosystem_file() {
   local app_name="$1"
   local port="$2"
-  local start_file="$3"
+  local mode="$3"
+  local start_file="${4:-}"
 
   local ecosystem_file="$PROJECT_DIR/ecosystem.config.cjs"
-  local rel_start="$start_file"
-  rel_start="${rel_start#"$PROJECT_DIR/"}"
-
-  cat > "$ecosystem_file" <<EOF
+  if [[ "$mode" == "direct" ]]; then
+    local rel_start="$start_file"
+    rel_start="${rel_start#"$PROJECT_DIR/"}"
+    cat > "$ecosystem_file" <<EOF
 module.exports = {
   apps: [
     {
@@ -575,25 +808,257 @@ module.exports = {
   ]
 };
 EOF
+  else
+    cat > "$ecosystem_file" <<EOF
+module.exports = {
+  apps: [
+    {
+      name: '${app_name}',
+      cwd: '${PROJECT_DIR}',
+      script: 'npm',
+      args: 'run preview -- --host 0.0.0.0 --port ${port}',
+      env: {
+        NODE_ENV: 'production',
+        PORT: '${port}'
+      }
+    }
+  ]
+};
+EOF
+  fi
 
   printf '%s\n' "$ecosystem_file"
 }
 
-run_pm2_ecosystem() {
-  local ecosystem_file="$1"
-  local app_name="$2"
-  local port="$3"
+run_svelte_ecosystem() {
+  ensure_svelte_build_ready || return 1
 
-  if pm2_app_exists "$app_name"; then
-    log_info "PM2 app '$app_name' sudah ada. Reload via ecosystem..."
-    if ! PORT="$port" pm2 reload "$ecosystem_file" --only "$app_name" --update-env; then
-      log_warn "Reload ecosystem gagal, fallback ke restart app."
-      PORT="$port" pm2 restart "$app_name" --update-env
+  local ecosystem_file="$PROJECT_DIR/ecosystem.config.cjs"
+  local mode="preview"
+  local entry_file=""
+
+  if [[ "$BUILD_REUSE_ECOSYSTEM" == "yes" && -f "$ecosystem_file" ]]; then
+    if ! has_valid_ecosystem_file; then
+      SVELTE_LAST_ERROR="ecosystem.config.cjs ada tapi tidak valid."
+      return 1
     fi
+    mode="reuse"
   else
-    log_info "PM2 app '$app_name' belum ada. Start via ecosystem..."
-    pm2 start "$ecosystem_file" --only "$app_name"
+    entry_file="$(detect_svelte_direct_entry || true)"
+    if [[ -n "$entry_file" ]]; then
+      mode="direct"
+      write_ecosystem_file "$BUILD_PM2_NAME" "$BUILD_PORT" "direct" "$entry_file" >/dev/null
+    else
+      mode="preview"
+      write_ecosystem_file "$BUILD_PM2_NAME" "$BUILD_PORT" "preview" >/dev/null
+    fi
   fi
+
+  local q_name q_file q_port
+  q_name="$(to_shell_quoted "$BUILD_PM2_NAME")"
+  q_file="$(to_shell_quoted "$ecosystem_file")"
+  q_port="$(to_shell_quoted "$BUILD_PORT")"
+
+  local cmd="PORT=$q_port pm2 start $q_file --only $q_name --update-env"
+  pm2_replace_and_start "$cmd" || {
+    SVELTE_LAST_ERROR="Gagal menjalankan ecosystem.config.cjs via PM2."
+    return 1
+  }
+
+  BUILD_SVELTE_ECOSYSTEM_MODE="$mode"
+  BUILD_START_FILE="$ecosystem_file"
+  BUILD_RUN_MODE="ecosystem-$mode"
+  return 0
+}
+
+run_svelte_adapter_node_runtime() {
+  ensure_svelte_build_ready || return 1
+
+  if [[ ! -d "$PROJECT_DIR/build" ]]; then
+    SVELTE_LAST_ERROR="Output build tidak ditemukan. Strategy adapter-node butuh folder build."
+    return 1
+  fi
+
+  local q_name q_dir q_port
+  q_name="$(to_shell_quoted "$BUILD_PM2_NAME")"
+  q_dir="$(to_shell_quoted "$PROJECT_DIR")"
+  q_port="$(to_shell_quoted "$BUILD_PORT")"
+  local cmd="PORT=$q_port pm2 start node --name $q_name --cwd $q_dir -- build"
+
+  pm2_replace_and_start "$cmd" || {
+    SVELTE_LAST_ERROR="Gagal menjalankan node build via PM2."
+    return 1
+  }
+
+  BUILD_START_FILE="$PROJECT_DIR/build"
+  BUILD_RUN_MODE="adapter-node"
+  return 0
+}
+
+check_port_listening() {
+  local port="$1"
+  if command_exists ss && ss -ltn 2>/dev/null | awk '{print $4}' | grep -E "[:.]${port}$" >/dev/null 2>&1; then
+    return 0
+  fi
+  if command_exists lsof && lsof -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+    return 0
+  fi
+  if (echo >/dev/tcp/127.0.0.1/"$port") >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
+check_http_ready() {
+  local port="$1"
+  if command_exists curl; then
+    curl -fsS --max-time 3 "http://127.0.0.1:${port}" >/dev/null 2>&1
+    return $?
+  fi
+  return 1
+}
+
+verify_runtime() {
+  local pm2_name="$1"
+  local port="$2"
+  BUILD_VERIFY_STATUS="failed"
+  BUILD_VERIFY_MESSAGE="Runtime belum tervalidasi."
+
+  local attempts=15
+  local i=1
+  local last_pm2_status="not running"
+  local last_port_ok="no"
+  local last_http_ok="no"
+
+  while (( i <= attempts )); do
+    last_pm2_status="$(detect_pm2_status "$pm2_name")"
+    if check_port_listening "$port"; then
+      last_port_ok="yes"
+    else
+      last_port_ok="no"
+    fi
+
+    if check_http_ready "$port"; then
+      last_http_ok="yes"
+    else
+      last_http_ok="no"
+    fi
+
+    if [[ "$last_pm2_status" == "online" && "$last_port_ok" == "yes" && "$last_http_ok" == "yes" ]]; then
+      BUILD_VERIFY_STATUS="success"
+      BUILD_VERIFY_MESSAGE="PM2 online, port listen, HTTP OK."
+      return 0
+    fi
+
+    sleep 1
+    i=$((i + 1))
+  done
+
+  BUILD_VERIFY_STATUS="failed"
+  BUILD_VERIFY_MESSAGE="PM2=$last_pm2_status, port_listen=$last_port_ok, http=$last_http_ok"
+  return 1
+}
+
+verify_runtime_with_feedback() {
+  if (( UI_ENABLED == 1 )) && (( GUM_ENABLED == 1 )); then
+    local tmp_file
+    tmp_file="$(mktemp)"
+
+    local q_name q_port q_tmp
+    q_name="$(to_shell_quoted "$BUILD_PM2_NAME")"
+    q_port="$(to_shell_quoted "$BUILD_PORT")"
+    q_tmp="$(to_shell_quoted "$tmp_file")"
+
+    local verify_cmd=""
+    read -r -d '' verify_cmd <<EOF || true
+pm2_name=$q_name
+port=$q_port
+tmp_file=$q_tmp
+status='failed'
+message='Runtime belum tervalidasi.'
+pm2_status='not running'
+port_ok='no'
+http_ok='no'
+attempt=1
+while [ \$attempt -le 15 ]; do
+  raw=\$(pm2 describe "\$pm2_name" 2>/dev/null || true)
+  lower=\$(printf '%s\n' "\$raw" | tr '[:upper:]' '[:lower:]')
+  if printf '%s\n' "\$lower" | grep -q 'online'; then
+    pm2_status='online'
+  elif printf '%s\n' "\$lower" | grep -q 'stopped'; then
+    pm2_status='stopped'
+  else
+    pm2_status='not running'
+  fi
+
+  port_ok='no'
+  if command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | awk '{print \$4}' | grep -E "[:.]\${port}\$" >/dev/null 2>&1; then
+    port_ok='yes'
+  elif command -v lsof >/dev/null 2>&1 && lsof -iTCP:"\$port" -sTCP:LISTEN >/dev/null 2>&1; then
+    port_ok='yes'
+  elif (echo >/dev/tcp/127.0.0.1/"\$port") >/dev/null 2>&1; then
+    port_ok='yes'
+  fi
+
+  http_ok='no'
+  if command -v curl >/dev/null 2>&1 && curl -fsS --max-time 3 "http://127.0.0.1:\$port" >/dev/null 2>&1; then
+    http_ok='yes'
+  fi
+
+  if [ "\$pm2_status" = "online" ] && [ "\$port_ok" = "yes" ] && [ "\$http_ok" = "yes" ]; then
+    status='success'
+    message='PM2 online, port listen, HTTP OK.'
+    break
+  fi
+
+  attempt=\$((attempt + 1))
+  sleep 1
+done
+
+if [ "\$status" != "success" ]; then
+  message="PM2=\$pm2_status, port_listen=\$port_ok, http=\$http_ok"
+fi
+
+printf '%s\t%s\n' "\$status" "\$message" > "\$tmp_file"
+[ "\$status" = "success" ]
+EOF
+
+    if ! run_shell_step "Verifikasi runtime" "$verify_cmd"; then
+      true
+    fi
+
+    IFS=$'\t' read -r BUILD_VERIFY_STATUS BUILD_VERIFY_MESSAGE < "$tmp_file" || true
+    rm -f "$tmp_file"
+    [[ "${BUILD_VERIFY_STATUS:-failed}" == "success" ]]
+    return
+  fi
+
+  log_info "Verifikasi runtime..."
+  verify_runtime "$BUILD_PM2_NAME" "$BUILD_PORT"
+}
+
+run_svelte_strategy_once() {
+  local strategy="$1"
+  SVELTE_LAST_ERROR=""
+
+  case "$strategy" in
+    preview)
+      run_svelte_preview
+      ;;
+    direct)
+      run_svelte_direct
+      ;;
+    ecosystem)
+      run_svelte_ecosystem
+      ;;
+    adapter-node)
+      run_svelte_adapter_node_runtime
+      ;;
+    *)
+      SVELTE_LAST_ERROR="Strategy tidak dikenal: $strategy"
+      return 1
+      ;;
+  esac
 }
 
 build_svelte_project() {
@@ -601,36 +1066,65 @@ build_svelte_project() {
   require_command npm "npm tidak ditemukan. Install npm dulu."
   require_command pm2 "PM2 tidak ditemukan. Install PM2 dulu."
 
-  BUILD_NODE_VERSION="$(node -v 2>/dev/null || true)"
-  BUILD_NPM_VERSION="$(npm -v 2>/dev/null || true)"
+  local requested_strategy="$BUILD_SVELTE_STRATEGY"
+  local final_strategy=""
+  local attempted_errors=""
 
-  log_info "Jalankan npm install..."
-  (
-    cd "$PROJECT_DIR"
-    npm install
-  )
-
-  log_info "Jalankan npm run build..."
-  (
-    cd "$PROJECT_DIR"
-    npm run build
-  )
-
-  local start_file=""
-  start_file="$(detect_svelte_start_file || true)"
-  if [[ -z "$start_file" ]]; then
-    die "File start Svelte tidak ditemukan. Cari build/index.js atau .svelte-kit/output/server/index.js."
+  if [[ "$requested_strategy" == "adapter-node" ]]; then
+    if ! prepare_adapter_node_config; then
+      die "${SVELTE_LAST_ERROR:-Gagal menyiapkan adapter-node.}"
+    fi
   fi
 
-  BUILD_START_FILE="$start_file"
+  if [[ "$requested_strategy" != "auto" ]]; then
+    if ! run_svelte_strategy_once "$requested_strategy"; then
+      die "${SVELTE_LAST_ERROR:-Strategy $requested_strategy gagal dijalankan.}"
+    fi
 
-  if [[ "$BUILD_RUN_MODE" == "ecosystem" ]]; then
-    local ecosystem_file=""
-    ecosystem_file="$(write_ecosystem_file "$BUILD_PM2_NAME" "$BUILD_PORT" "$start_file")"
-    run_pm2_ecosystem "$ecosystem_file" "$BUILD_PM2_NAME" "$BUILD_PORT"
+    if ! verify_runtime_with_feedback; then
+      die "Strategy $requested_strategy gagal verifikasi runtime: $BUILD_VERIFY_MESSAGE"
+    fi
+
+    final_strategy="$requested_strategy"
   else
-    run_pm2_direct "$start_file" "$BUILD_PM2_NAME" "$BUILD_PORT"
+    if project_uses_adapter_node; then
+      if run_svelte_strategy_once "adapter-node" && verify_runtime_with_feedback; then
+        final_strategy="adapter-node"
+      else
+        attempted_errors+="adapter-node: ${SVELTE_LAST_ERROR:-$BUILD_VERIFY_MESSAGE}; "
+      fi
+    fi
+
+    if [[ -z "$final_strategy" ]] && has_valid_ecosystem_file; then
+      if run_svelte_strategy_once "ecosystem" && verify_runtime_with_feedback; then
+        final_strategy="ecosystem"
+      else
+        attempted_errors+="ecosystem: ${SVELTE_LAST_ERROR:-$BUILD_VERIFY_MESSAGE}; "
+      fi
+    fi
+
+    if [[ -z "$final_strategy" ]]; then
+      if run_svelte_strategy_once "direct" && verify_runtime_with_feedback; then
+        final_strategy="direct"
+      else
+        attempted_errors+="direct: ${SVELTE_LAST_ERROR:-$BUILD_VERIFY_MESSAGE}; "
+      fi
+    fi
+
+    if [[ -z "$final_strategy" ]]; then
+      if run_svelte_strategy_once "preview" && verify_runtime_with_feedback; then
+        final_strategy="preview"
+      else
+        attempted_errors+="preview: ${SVELTE_LAST_ERROR:-$BUILD_VERIFY_MESSAGE}; "
+      fi
+    fi
+
+    if [[ -z "$final_strategy" ]]; then
+      die "Semua fallback strategy auto gagal. Detail: $attempted_errors"
+    fi
   fi
+
+  BUILD_SVELTE_STRATEGY_FINAL="$final_strategy"
 }
 
 sql_literal() {
@@ -667,6 +1161,9 @@ ensure_metadata_db() {
       node_version TEXT,
       npm_version TEXT,
       go_version TEXT,
+      svelte_strategy TEXT,
+      verify_status TEXT,
+      verify_message TEXT,
       updated_at TEXT
     );
   "
@@ -682,6 +1179,9 @@ ensure_metadata_db() {
     "node_version|TEXT"
     "npm_version|TEXT"
     "go_version|TEXT"
+    "svelte_strategy|TEXT"
+    "verify_status|TEXT"
+    "verify_message|TEXT"
     "updated_at|TEXT"
   )
 
@@ -805,7 +1305,8 @@ write_metadata() {
 
   local project_dir_sql app_type_sql port_sql pm2_name_sql
   local env_file_sql start_file_sql run_mode_sql
-  local node_version_sql npm_version_sql go_version_sql updated_at_sql
+  local node_version_sql npm_version_sql go_version_sql
+  local svelte_strategy_sql verify_status_sql verify_message_sql updated_at_sql
 
   project_dir_sql="$(sql_literal "$PROJECT_DIR")"
   app_type_sql="$(sql_literal "$BUILD_TYPE")"
@@ -817,6 +1318,9 @@ write_metadata() {
   node_version_sql="$(sql_literal "$BUILD_NODE_VERSION")"
   npm_version_sql="$(sql_literal "$BUILD_NPM_VERSION")"
   go_version_sql="$(sql_literal "$BUILD_GO_VERSION")"
+  svelte_strategy_sql="$(sql_literal "$BUILD_SVELTE_STRATEGY_FINAL")"
+  verify_status_sql="$(sql_literal "$BUILD_VERIFY_STATUS")"
+  verify_message_sql="$(sql_literal "$BUILD_VERIFY_MESSAGE")"
   updated_at_sql="$(sql_literal "$now_utc")"
 
   sqlite3 "$db_path" "
@@ -833,6 +1337,9 @@ write_metadata() {
       node_version,
       npm_version,
       go_version,
+      svelte_strategy,
+      verify_status,
+      verify_message,
       updated_at
     ) VALUES (
       ${project_dir_sql},
@@ -845,6 +1352,9 @@ write_metadata() {
       ${node_version_sql},
       ${npm_version_sql},
       ${go_version_sql},
+      ${svelte_strategy_sql},
+      ${verify_status_sql},
+      ${verify_message_sql},
       ${updated_at_sql}
     );
     COMMIT;
@@ -868,14 +1378,16 @@ Build options:
   --port <port>
   --pm2-name <name>
   --git-pull yes|no
-  --run-mode ecosystem|direct
+  --run-mode ecosystem|direct              (legacy, untuk compat)
+  --svelte-strategy auto|preview|direct|ecosystem|adapter-node
+  --reuse-ecosystem yes|no                 (khusus strategy ecosystem/auto)
   --no-ui
   --yes
 
 Contoh:
   gas build
   gas build --no-ui --type go --pm2-name diraaax-api --git-pull yes --yes
-  gas build --no-ui --type svelte --port 4001 --pm2-name diraaax-web --run-mode ecosystem --git-pull yes --yes
+  gas build --no-ui --type svelte --port 4001 --pm2-name diraaax-web --svelte-strategy auto --git-pull yes --yes
 
 Detail per command:
   gas build --help
@@ -931,7 +1443,9 @@ Opsi:
   --port <port>
   --pm2-name <name>
   --git-pull yes|no
-  --run-mode ecosystem|direct   (khusus Svelte)
+  --run-mode ecosystem|direct   (legacy, kompatibilitas lama)
+  --svelte-strategy auto|preview|direct|ecosystem|adapter-node
+  --reuse-ecosystem yes|no
   --no-ui
   --yes
   --help
@@ -939,7 +1453,11 @@ Opsi:
 Contoh:
   gas build
   gas build --no-ui --type go --pm2-name diraaax-api --git-pull yes --yes
-  gas build --no-ui --type svelte --port 4001 --pm2-name diraaax-web --run-mode ecosystem --git-pull yes --yes
+  gas build --no-ui --type svelte --port 4001 --pm2-name diraaax-web --svelte-strategy auto --git-pull yes --yes
+  gas build --no-ui --type svelte --port 3000 --pm2-name marbot-web --svelte-strategy preview --git-pull no --yes
+  gas build --no-ui --type svelte --port 3000 --pm2-name marbot-web --svelte-strategy direct --git-pull no --yes
+  gas build --no-ui --type svelte --port 3000 --pm2-name marbot-web --svelte-strategy ecosystem --reuse-ecosystem yes --git-pull no --yes
+  gas build --no-ui --type svelte --port 3000 --pm2-name marbot-web --svelte-strategy adapter-node --git-pull no --yes
 EOF
 }
 
@@ -960,7 +1478,9 @@ print_build_help() {
     printf '  --port <port>\n'
     printf '  --pm2-name <name>\n'
     printf '  --git-pull yes|no\n'
-    printf '  --run-mode ecosystem|direct   (khusus Svelte)\n'
+    printf '  --run-mode ecosystem|direct   (legacy, kompatibilitas lama)\n'
+    printf '  --svelte-strategy auto|preview|direct|ecosystem|adapter-node\n'
+    printf '  --reuse-ecosystem yes|no\n'
     printf '  --no-ui\n'
     printf '  --yes\n'
     printf '  --help\n'
@@ -968,7 +1488,11 @@ print_build_help() {
     gum style --bold "Contoh"
     printf '  gas build\n'
     printf '  gas build --no-ui --type go --pm2-name diraaax-api --git-pull yes --yes\n'
-    printf '  gas build --no-ui --type svelte --port 4001 --pm2-name diraaax-web --run-mode ecosystem --git-pull yes --yes\n'
+    printf '  gas build --no-ui --type svelte --port 4001 --pm2-name diraaax-web --svelte-strategy auto --git-pull yes --yes\n'
+    printf '  gas build --no-ui --type svelte --port 3000 --pm2-name marbot-web --svelte-strategy preview --git-pull no --yes\n'
+    printf '  gas build --no-ui --type svelte --port 3000 --pm2-name marbot-web --svelte-strategy direct --git-pull no --yes\n'
+    printf '  gas build --no-ui --type svelte --port 3000 --pm2-name marbot-web --svelte-strategy ecosystem --reuse-ecosystem yes --git-pull no --yes\n'
+    printf '  gas build --no-ui --type svelte --port 3000 --pm2-name marbot-web --svelte-strategy adapter-node --git-pull no --yes\n'
     printf '\n'
     gum style --bold "Detail per command"
     printf '  gas build --help\n'
@@ -1029,14 +1553,16 @@ print_help() {
     printf '  --port <port>\n'
     printf '  --pm2-name <name>\n'
     printf '  --git-pull yes|no\n'
-    printf '  --run-mode ecosystem|direct\n'
+    printf '  --run-mode ecosystem|direct              (legacy)\n'
+    printf '  --svelte-strategy auto|preview|direct|ecosystem|adapter-node\n'
+    printf '  --reuse-ecosystem yes|no\n'
     printf '  --no-ui\n'
     printf '  --yes\n'
     printf '\n'
     gum style --bold "Contoh"
     printf '  gas build\n'
     printf '  gas build --no-ui --type go --pm2-name diraaax-api --git-pull yes --yes\n'
-    printf '  gas build --no-ui --type svelte --port 4001 --pm2-name diraaax-web --run-mode ecosystem --git-pull yes --yes\n'
+    printf '  gas build --no-ui --type svelte --port 4001 --pm2-name diraaax-web --svelte-strategy auto --git-pull yes --yes\n'
     return
   fi
 
@@ -1091,6 +1617,26 @@ parse_build_args() {
         ;;
       --run-mode=*)
         BUILD_RUN_MODE="${1#*=}"
+        shift
+        ;;
+      --svelte-strategy)
+        [[ $# -ge 2 ]] || die "Flag --svelte-strategy butuh nilai."
+        BUILD_SVELTE_STRATEGY="$2"
+        shift 2
+        ;;
+      --svelte-strategy=*)
+        BUILD_SVELTE_STRATEGY="${1#*=}"
+        shift
+        ;;
+      --reuse-ecosystem)
+        [[ $# -ge 2 ]] || die "Flag --reuse-ecosystem butuh nilai yes|no."
+        BUILD_REUSE_ECOSYSTEM="$(normalize_yes_no "$2" || true)"
+        [[ -n "$BUILD_REUSE_ECOSYSTEM" ]] || die "Nilai --reuse-ecosystem harus yes atau no."
+        shift 2
+        ;;
+      --reuse-ecosystem=*)
+        BUILD_REUSE_ECOSYSTEM="$(normalize_yes_no "${1#*=}" || true)"
+        [[ -n "$BUILD_REUSE_ECOSYSTEM" ]] || die "Nilai --reuse-ecosystem harus yes atau no."
         shift
         ;;
       --no-ui)
@@ -1274,15 +1820,18 @@ collect_build_inputs() {
 
   case "$BUILD_TYPE" in
     go)
+      [[ -z "$BUILD_SVELTE_STRATEGY" ]] || die "--svelte-strategy hanya berlaku untuk --type svelte."
+      [[ -z "$BUILD_REUSE_ECOSYSTEM" ]] || die "--reuse-ecosystem hanya berlaku untuk --type svelte."
       BUILD_RUN_MODE="direct"
       resolve_pm2_name
       resolve_go_port_and_env
       resolve_go_target
       ;;
     svelte)
-      resolve_svelte_run_mode
+      resolve_svelte_strategy
       resolve_pm2_name
       resolve_svelte_port
+      resolve_reuse_ecosystem
       ;;
     *)
       die "Type tidak valid: $BUILD_TYPE"
@@ -1297,7 +1846,14 @@ print_build_plan() {
   printf '  Git pull  : %s\n' "${BUILD_GIT_PULL:-no}"
   printf '  PM2 name  : %s\n' "$BUILD_PM2_NAME"
   printf '  Port      : %s\n' "$BUILD_PORT"
-  printf '  Run mode  : %s\n' "${BUILD_RUN_MODE:-direct}"
+  if [[ "$BUILD_TYPE" == "svelte" ]]; then
+    printf '  Strategy  : %s\n' "${BUILD_SVELTE_STRATEGY:-auto}"
+    if [[ -f "$PROJECT_DIR/ecosystem.config.cjs" ]]; then
+      printf '  Reuse eco : %s\n' "${BUILD_REUSE_ECOSYSTEM:-no}"
+    fi
+  else
+    printf '  Run mode  : %s\n' "${BUILD_RUN_MODE:-direct}"
+  fi
   if [[ "$BUILD_TYPE" == "go" ]]; then
     printf '  Go target : %s\n' "$BUILD_GO_TARGET"
   fi
@@ -1317,6 +1873,13 @@ confirm_build_execution() {
 run_build() {
   parse_build_args "$@"
   init_ui_mode
+
+  BUILD_SVELTE_STRATEGY_FINAL=""
+  BUILD_VERIFY_STATUS="not_checked"
+  BUILD_VERIFY_MESSAGE="-"
+  BUILD_SVELTE_ECOSYSTEM_MODE=""
+  SVELTE_BUILD_DONE=0
+  SVELTE_LAST_ERROR=""
 
   collect_build_inputs
   print_build_plan
@@ -1348,6 +1911,11 @@ run_build() {
   printf 'PM2 name  : %s\n' "$BUILD_PM2_NAME"
   printf 'Port      : %s\n' "$BUILD_PORT"
   printf 'Run mode  : %s\n' "${BUILD_RUN_MODE:-direct}"
+  if [[ "$BUILD_TYPE" == "svelte" ]]; then
+    printf 'Strategy  : %s\n' "${BUILD_SVELTE_STRATEGY_FINAL:-$BUILD_SVELTE_STRATEGY}"
+    printf 'Verify    : %s\n' "${BUILD_VERIFY_STATUS:-not_checked}"
+    printf 'Verify msg: %s\n' "${BUILD_VERIFY_MESSAGE:--}"
+  fi
 }
 
 main() {
