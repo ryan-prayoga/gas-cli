@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+if command -v readlink >/dev/null 2>&1; then
+  RESOLVED_SOURCE="$(readlink -f "$SCRIPT_SOURCE" 2>/dev/null || true)"
+  if [[ -n "$RESOLVED_SOURCE" ]]; then
+    SCRIPT_SOURCE="$RESOLVED_SOURCE"
+  fi
+fi
+
+ROOT_DIR="$(cd -- "$(dirname -- "$SCRIPT_SOURCE")/.." && pwd -P)"
 readonly ROOT_DIR
 
 source "$ROOT_DIR/lib/core.sh"
