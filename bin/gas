@@ -777,6 +777,66 @@ Contoh:
 EOF
 }
 
+print_build_help_plain() {
+  cat <<EOF
+gas build - Build project Go atau Svelte lalu jalankan via PM2
+
+Yang dilakukan command ini:
+  - Deteksi project dari current directory
+  - (Opsional) git pull sebelum build
+  - Build sesuai type (go / svelte)
+  - Jalankan atau restart app di PM2
+  - Simpan metadata global ke ~/.config/gas/apps.db
+
+Opsi:
+  --type go|svelte
+  --port <port>
+  --pm2-name <name>
+  --git-pull yes|no
+  --run-mode ecosystem|direct   (khusus Svelte)
+  --no-ui
+  --yes
+  --help
+
+Contoh:
+  gas build
+  gas build --no-ui --type go --pm2-name diraaax-api --git-pull yes --yes
+  gas build --no-ui --type svelte --port 4001 --pm2-name diraaax-web --run-mode ecosystem --git-pull yes --yes
+EOF
+}
+
+print_build_help() {
+  if (( NO_UI == 0 )) && command_exists gum && is_interactive_terminal; then
+    gum style --bold "gas build"
+    gum style "Build project Go atau Svelte lalu jalankan via PM2"
+    printf '\n'
+    gum style --bold "Yang dilakukan command ini"
+    printf '  - Deteksi project dari current directory\n'
+    printf '  - (Opsional) git pull sebelum build\n'
+    printf '  - Build sesuai type (go / svelte)\n'
+    printf '  - Jalankan atau restart app di PM2\n'
+    printf '  - Simpan metadata global ke ~/.config/gas/apps.db\n'
+    printf '\n'
+    gum style --bold "Opsi"
+    printf '  --type go|svelte\n'
+    printf '  --port <port>\n'
+    printf '  --pm2-name <name>\n'
+    printf '  --git-pull yes|no\n'
+    printf '  --run-mode ecosystem|direct   (khusus Svelte)\n'
+    printf '  --no-ui\n'
+    printf '  --yes\n'
+    printf '  --help\n'
+    printf '\n'
+    gum style --bold "Contoh"
+    printf '  gas build\n'
+    printf '  gas build --no-ui --type go --pm2-name diraaax-api --git-pull yes --yes\n'
+    printf '  gas build --no-ui --type svelte --port 4001 --pm2-name diraaax-web --run-mode ecosystem --git-pull yes --yes\n'
+    return
+  fi
+
+  print_build_help_plain
+}
+
 print_overview_plain() {
   cat <<EOF
 gas v$CLI_VERSION
@@ -893,7 +953,7 @@ parse_build_args() {
         shift
         ;;
       --help|-h)
-        print_help_plain
+        print_build_help_plain
         exit 0
         ;;
       *)
