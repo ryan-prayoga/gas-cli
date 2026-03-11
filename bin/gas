@@ -780,7 +780,7 @@ EOF
 print_help() {
   if (( NO_UI == 0 )) && command_exists gum && is_interactive_terminal; then
     gum style --bold "gas v$CLI_VERSION"
-    gum style "CLI build helper untuk project Go & Svelte tes"
+    gum style "CLI build helper untuk project Go & Svelte"
     printf '\n'
     gum style --bold "Perintah"
     printf '  gas build [options]\n'
