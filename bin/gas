@@ -139,7 +139,7 @@ ui_input() {
 
   if (( GUM_ENABLED == 1 )); then
     local value=""
-    if value="$(gum input --prompt "$prompt: " --value "$default_value" 2>/dev/null)"; then
+    if value="$(gum input --prompt "$prompt: " --value "$default_value")"; then
       if [[ -z "$value" ]]; then
         printf '%s\n' "$default_value"
       else
@@ -1266,7 +1266,7 @@ run_list() {
     return
   fi
 
-  if (( NO_UI == 0 )) && command_exists gum; then
+  if (( GUM_ENABLED == 1 )); then
     {
       printf 'Project\tType\tPM2 name\tPort\tUpdated\n'
       printf '%s\n' "$rows"
