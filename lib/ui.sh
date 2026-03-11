@@ -109,3 +109,43 @@ resolve_port_input() {
   validate_port "$BUILD_PORT" || die "Port tidak valid: $BUILD_PORT"
 }
 
+summary_value() {
+  local value="${1:-}"
+  if [[ -z "$value" ]]; then
+    printf -- "-"
+    return
+  fi
+  printf '%s' "$value"
+}
+
+print_build_summary_plain() {
+  printf '\nBuild Summary\n\n'
+  printf 'Folder      : %s\n' "$(summary_value "$PROJECT_DIR")"
+  printf 'Stack       : %s\n' "$(summary_value "${BUILD_STACK_LABEL:-}")"
+  printf 'Strategy    : %s\n' "$(summary_value "${BUILD_STRATEGY_FINAL:-${BUILD_STRATEGY:-go-binary}}")"
+  printf 'PM2 name    : %s\n' "$(summary_value "$BUILD_PM2_NAME")"
+  printf 'Port        : %s\n' "$(summary_value "$BUILD_PORT")"
+  printf 'Deps mode   : %s\n' "$(summary_value "${BUILD_INSTALL_DEPS:-auto}")"
+  printf 'Install ran : %s\n' "$(summary_value "${BUILD_INSTALL_RAN:-no}")"
+  printf 'Status      : %s\n' "$(summary_value "${BUILD_VERIFY_STATUS:-unknown}")"
+  printf 'Health      : %s\n' "$(summary_value "${BUILD_HEALTH_STATUS:-skipped}")"
+}
+
+print_build_summary() {
+  if (( UI_ENABLED == 1 )) && (( GUM_ENABLED == 1 )); then
+    gum style --bold "Build Summary"
+    printf '\n'
+    printf 'Folder      : %s\n' "$(summary_value "$PROJECT_DIR")"
+    printf 'Stack       : %s\n' "$(summary_value "${BUILD_STACK_LABEL:-}")"
+    printf 'Strategy    : %s\n' "$(summary_value "${BUILD_STRATEGY_FINAL:-${BUILD_STRATEGY:-go-binary}}")"
+    printf 'PM2 name    : %s\n' "$(summary_value "$BUILD_PM2_NAME")"
+    printf 'Port        : %s\n' "$(summary_value "$BUILD_PORT")"
+    printf 'Deps mode   : %s\n' "$(summary_value "${BUILD_INSTALL_DEPS:-auto}")"
+    printf 'Install ran : %s\n' "$(summary_value "${BUILD_INSTALL_RAN:-no}")"
+    printf 'Status      : %s\n' "$(summary_value "${BUILD_VERIFY_STATUS:-unknown}")"
+    printf 'Health      : %s\n' "$(summary_value "${BUILD_HEALTH_STATUS:-skipped}")"
+    return
+  fi
+
+  print_build_summary_plain
+}
