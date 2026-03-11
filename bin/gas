@@ -777,6 +777,35 @@ Contoh:
 EOF
 }
 
+print_overview_plain() {
+  cat <<EOF
+gas v$CLI_VERSION
+
+Daftar command:
+  build    Build project Go atau Svelte lalu jalankan via PM2
+  help     Tampilkan panduan lengkap command dan opsi
+
+Untuk detail command:
+  gas help
+  gas <command> --help
+EOF
+}
+
+print_overview() {
+  if (( NO_UI == 0 )) && command_exists gum && is_interactive_terminal; then
+    gum style --bold "gas v$CLI_VERSION"
+    printf '\n'
+    gum style --bold "Daftar command"
+    printf '  build    Build project Go atau Svelte lalu jalankan via PM2\n'
+    printf '  help     Tampilkan panduan lengkap command dan opsi\n'
+    printf '\n'
+    gum style --italic "Untuk detail command: gas help atau gas <command> --help"
+    return
+  fi
+
+  print_overview_plain
+}
+
 print_help() {
   if (( NO_UI == 0 )) && command_exists gum && is_interactive_terminal; then
     gum style --bold "gas v$CLI_VERSION"
@@ -905,7 +934,7 @@ run_build() {
 
 main() {
   if [[ $# -eq 0 ]]; then
-    print_help
+    print_overview
     exit 0
   fi
 
