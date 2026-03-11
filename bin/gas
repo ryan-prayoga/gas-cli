@@ -1,0 +1,934 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CLI_NAME="gas"
+CLI_VERSION="0.1.0"
+
+PROJECT_DIR="$(pwd -P)"
+
+NO_UI=0
+ASSUME_YES=0
+UI_ENABLED=0
+GUM_ENABLED=0
+
+BUILD_TYPE=""
+BUILD_PORT=""
+BUILD_PM2_NAME=""
+BUILD_GIT_PULL=""
+BUILD_RUN_MODE=""
+
+BUILD_ENV_FILE=""
+BUILD_START_FILE=""
+BUILD_GO_TARGET=""
+BUILD_NODE_VERSION=""
+BUILD_NPM_VERSION=""
+BUILD_GO_VERSION=""
+
+log_info() {
+  printf '[%s] %s\n' "$CLI_NAME" "$*" >&2
+}
+
+log_warn() {
+  printf '[%s][warn] %s\n' "$CLI_NAME" "$*" >&2
+}
+
+log_error() {
+  printf '[%s][error] %s\n' "$CLI_NAME" "$*" >&2
+}
+
+die() {
+  log_error "$*"
+  exit 1
+}
+
+command_exists() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+is_interactive_terminal() {
+  [[ -t 0 && -t 1 ]]
+}
+
+init_ui_mode() {
+  UI_ENABLED=0
+  GUM_ENABLED=0
+
+  if (( NO_UI == 0 )) && is_interactive_terminal; then
+    UI_ENABLED=1
+  fi
+
+  if (( UI_ENABLED == 1 )) && command_exists gum; then
+    GUM_ENABLED=1
+  fi
+}
+
+normalize_yes_no() {
+  local value
+  value="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  case "$value" in
+    yes|y|true|1) printf 'yes\n' ;;
+    no|n|false|0) printf 'no\n' ;;
+    *) return 1 ;;
+  esac
+}
+
+validate_port() {
+  local port="$1"
+  [[ "$port" =~ ^[0-9]+$ ]] || return 1
+  (( port >= 1 && port <= 65535 ))
+}
+
+ui_select() {
+  local prompt="$1"
+  local default_value="$2"
+  shift 2
+  local options=("$@")
+
+  if (( GUM_ENABLED == 1 )); then
+    local chosen
+    chosen="$(printf '%s\n' "${options[@]}" | gum choose --header "$prompt")"
+    if [[ -z "$chosen" ]]; then
+      printf '%s\n' "$default_value"
+    else
+      printf '%s\n' "$chosen"
+    fi
+    return
+  fi
+
+  local index=1
+  printf '%s\n' "$prompt" >&2
+  for option in "${options[@]}"; do
+    if [[ "$option" == "$default_value" ]]; then
+      printf '  %d) %s (default)\n' "$index" "$option" >&2
+    else
+      printf '  %d) %s\n' "$index" "$option" >&2
+    fi
+    index=$((index + 1))
+  done
+  printf '> ' >&2
+
+  local input=""
+  read -r input || true
+
+  if [[ -z "$input" ]]; then
+    printf '%s\n' "$default_value"
+    return
+  fi
+
+  if [[ "$input" =~ ^[0-9]+$ ]] && (( input >= 1 && input <= ${#options[@]} )); then
+    printf '%s\n' "${options[input-1]}"
+    return
+  fi
+
+  for option in "${options[@]}"; do
+    if [[ "$option" == "$input" ]]; then
+      printf '%s\n' "$option"
+      return
+    fi
+  done
+
+  log_warn "Pilihan tidak valid, pakai default: $default_value"
+  printf '%s\n' "$default_value"
+}
+
+ui_input() {
+  local prompt="$1"
+  local default_value="${2:-}"
+
+  if (( GUM_ENABLED == 1 )); then
+    local value=""
+    if value="$(gum input --prompt "$prompt: " --value "$default_value" 2>/dev/null)"; then
+      if [[ -z "$value" ]]; then
+        printf '%s\n' "$default_value"
+      else
+        printf '%s\n' "$value"
+      fi
+      return
+    fi
+  fi
+
+  if [[ -n "$default_value" ]]; then
+    printf '%s [%s]: ' "$prompt" "$default_value" >&2
+  else
+    printf '%s: ' "$prompt" >&2
+  fi
+
+  local value=""
+  read -r value || true
+
+  if [[ -z "$value" ]]; then
+    printf '%s\n' "$default_value"
+  else
+    printf '%s\n' "$value"
+  fi
+}
+
+resolve_pm2_name() {
+  if [[ -n "$BUILD_PM2_NAME" ]]; then
+    return
+  fi
+
+  local default_name
+  default_name="$(basename "$PROJECT_DIR")"
+
+  if (( UI_ENABLED == 1 )) && (( ASSUME_YES == 0 )); then
+    BUILD_PM2_NAME="$(ui_input 'PM2 app name' "$default_name")"
+  else
+    BUILD_PM2_NAME="$default_name"
+  fi
+}
+
+require_command() {
+  local cmd="$1"
+  local message="$2"
+  command_exists "$cmd" || die "$message"
+}
+
+extract_port_from_env_file() {
+  local file="$1"
+  awk '
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*PORT[[:space:]]*=/ {
+      sub(/^[^=]*=/, "", $0)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", $0)
+      gsub(/^["'"'"'"]|["'"'"'"]$/, "", $0)
+      print $0
+      exit
+    }
+  ' "$file"
+}
+
+detect_env_port() {
+  local detected_port=""
+  local detected_file=""
+  local file=""
+
+  for file in "$PROJECT_DIR/.env" "$PROJECT_DIR/.env.production"; do
+    if [[ -f "$file" ]]; then
+      local parsed_port=""
+      parsed_port="$(extract_port_from_env_file "$file" || true)"
+      if [[ -n "$parsed_port" ]]; then
+        detected_port="$parsed_port"
+        detected_file="$file"
+        break
+      fi
+      if [[ -z "$detected_file" ]]; then
+        detected_file="$file"
+      fi
+    fi
+  done
+
+  if [[ -z "$detected_file" ]]; then
+    detected_file="$PROJECT_DIR/.env"
+  fi
+
+  printf '%s;%s\n' "$detected_port" "$detected_file"
+}
+
+upsert_env_port() {
+  local file="$1"
+  local port="$2"
+
+  if [[ ! -f "$file" ]]; then
+    printf 'PORT=%s\n' "$port" > "$file"
+    return
+  fi
+
+  local tmp_file
+  tmp_file="$(mktemp)"
+  awk -v port="$port" '
+    BEGIN { updated = 0 }
+    {
+      if ($0 ~ /^[[:space:]]*PORT[[:space:]]*=/ && updated == 0) {
+        print "PORT=" port
+        updated = 1
+        next
+      }
+      print $0
+    }
+    END {
+      if (updated == 0) {
+        print "PORT=" port
+      }
+    }
+  ' "$file" > "$tmp_file"
+  mv "$tmp_file" "$file"
+}
+
+collect_type_candidates() {
+  local candidates=()
+  local has_go=0
+  local has_svelte=0
+
+  if [[ -f "$PROJECT_DIR/go.mod" || -f "$PROJECT_DIR/main.go" ]]; then
+    has_go=1
+  fi
+
+  shopt -s nullglob
+  local cmd_targets=("$PROJECT_DIR"/cmd/*/main.go)
+  shopt -u nullglob
+  if (( ${#cmd_targets[@]} > 0 )); then
+    has_go=1
+  fi
+
+  if [[ -f "$PROJECT_DIR/svelte.config.js" || -f "$PROJECT_DIR/svelte.config.ts" ]]; then
+    has_svelte=1
+  fi
+  if [[ -f "$PROJECT_DIR/package.json" ]]; then
+    if grep -Eq '"svelte"|@sveltejs/' "$PROJECT_DIR/package.json"; then
+      has_svelte=1
+    fi
+  fi
+
+  if (( has_go == 1 )); then
+    candidates+=("go")
+  fi
+  if (( has_svelte == 1 )); then
+    candidates+=("svelte")
+  fi
+
+  printf '%s\n' "${candidates[@]}"
+}
+
+resolve_build_type() {
+  if [[ -n "$BUILD_TYPE" ]]; then
+    case "$BUILD_TYPE" in
+      go|svelte) return ;;
+      *) die "Nilai --type harus go atau svelte" ;;
+    esac
+  fi
+
+  local candidates=()
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && candidates+=("$line")
+  done < <(collect_type_candidates)
+
+  if (( ${#candidates[@]} == 1 )); then
+    BUILD_TYPE="${candidates[0]}"
+    return
+  fi
+
+  if (( ${#candidates[@]} == 0 )); then
+    if (( UI_ENABLED == 1 )) && (( ASSUME_YES == 0 )); then
+      BUILD_TYPE="$(ui_select 'Pilih jenis project' 'go' go svelte)"
+      return
+    fi
+    die "Tidak bisa deteksi jenis project. Pakai --type go|svelte."
+  fi
+
+  if (( UI_ENABLED == 1 )) && (( ASSUME_YES == 0 )); then
+    BUILD_TYPE="$(ui_select 'Project terdeteksi lebih dari satu jenis. Pilih type' "${candidates[0]}" "${candidates[@]}")"
+    return
+  fi
+
+  die "Jenis project ambigu. Pakai --type go|svelte."
+}
+
+maybe_git_pull() {
+  if [[ -z "$BUILD_GIT_PULL" ]]; then
+    if (( UI_ENABLED == 1 )) && (( ASSUME_YES == 0 )); then
+      BUILD_GIT_PULL="$(ui_select 'Mau jalankan git pull dulu?' 'no' yes no)"
+    else
+      BUILD_GIT_PULL="no"
+    fi
+  fi
+
+  if [[ "$BUILD_GIT_PULL" == "yes" ]]; then
+    require_command git "git tidak ditemukan. Install git dulu."
+    log_info "Menjalankan git pull..."
+    if ! git pull; then
+      log_warn "git pull gagal. Mungkin folder ini bukan root repo git, atau root repo ada di parent."
+    fi
+  fi
+}
+
+pm2_app_exists() {
+  local name="$1"
+  pm2 describe "$name" >/dev/null 2>&1
+}
+
+run_pm2_direct() {
+  local script_path="$1"
+  local app_name="$2"
+  local port="$3"
+
+  if pm2_app_exists "$app_name"; then
+    log_info "PM2 app '$app_name' sudah ada. Restart..."
+    PORT="$port" pm2 restart "$app_name" --update-env
+  else
+    log_info "PM2 app '$app_name' belum ada. Start..."
+    PORT="$port" pm2 start "$script_path" --name "$app_name" --cwd "$PROJECT_DIR"
+  fi
+}
+
+resolve_go_port_and_env() {
+  local detected=""
+  detected="$(detect_env_port)"
+  local detected_port="${detected%%;*}"
+  local env_file="${detected#*;}"
+  BUILD_ENV_FILE="$env_file"
+
+  if [[ -n "$BUILD_PORT" ]]; then
+    validate_port "$BUILD_PORT" || die "Port tidak valid: $BUILD_PORT"
+  else
+    if (( UI_ENABLED == 1 )) && (( ASSUME_YES == 0 )); then
+      if [[ -n "$detected_port" ]]; then
+        local keep_port=""
+        keep_port="$(ui_select "PORT terdeteksi: $detected_port (dari $(basename "$env_file")). Pakai ini?" "yes" yes no)"
+        if [[ "$keep_port" == "yes" ]]; then
+          BUILD_PORT="$detected_port"
+        else
+          BUILD_PORT="$(ui_input 'Masukkan port baru' "$detected_port")"
+        fi
+      else
+        BUILD_PORT="$(ui_input 'Masukkan port' '3000')"
+      fi
+    else
+      if [[ -n "$detected_port" ]]; then
+        BUILD_PORT="$detected_port"
+      else
+        BUILD_PORT="3000"
+      fi
+    fi
+  fi
+
+  validate_port "$BUILD_PORT" || die "Port tidak valid: $BUILD_PORT"
+
+  if [[ "$BUILD_PORT" != "$detected_port" ]]; then
+    upsert_env_port "$env_file" "$BUILD_PORT"
+    log_info "PORT disimpan ke $(basename "$env_file"): $BUILD_PORT"
+  fi
+}
+
+collect_go_targets() {
+  local targets=()
+
+  if [[ -f "$PROJECT_DIR/main.go" ]]; then
+    targets+=("./")
+  fi
+
+  shopt -s nullglob
+  local files=("$PROJECT_DIR"/cmd/*/main.go)
+  shopt -u nullglob
+
+  local file=""
+  for file in "${files[@]}"; do
+    local rel_dir=""
+    rel_dir="$(dirname "${file#"$PROJECT_DIR/"}")"
+    targets+=("./$rel_dir")
+  done
+
+  printf '%s\n' "${targets[@]}"
+}
+
+resolve_go_target() {
+  local targets=()
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && targets+=("$line")
+  done < <(collect_go_targets)
+
+  if (( ${#targets[@]} == 0 )); then
+    die "Target Go tidak ditemukan. Perlu main.go atau cmd/*/main.go."
+  fi
+
+  if (( ${#targets[@]} == 1 )); then
+    BUILD_GO_TARGET="${targets[0]}"
+    return
+  fi
+
+  if (( UI_ENABLED == 1 )) && (( ASSUME_YES == 0 )); then
+    BUILD_GO_TARGET="$(ui_select 'Pilih target Go untuk dibuild' "${targets[0]}" "${targets[@]}")"
+  else
+    BUILD_GO_TARGET="${targets[0]}"
+    log_warn "Multiple target Go terdeteksi. Dipilih otomatis: $BUILD_GO_TARGET"
+  fi
+}
+
+sanitize_binary_name() {
+  local name="$1"
+  name="${name// /-}"
+  name="${name//\//-}"
+  printf '%s\n' "$name"
+}
+
+build_go_project() {
+  require_command go "Go tidak ditemukan. Install Go dulu."
+  require_command pm2 "PM2 tidak ditemukan. Install PM2 dulu."
+
+  resolve_pm2_name
+  resolve_go_port_and_env
+  resolve_go_target
+
+  BUILD_RUN_MODE="direct"
+  BUILD_GO_VERSION="$(go version | awk '{print $3}')"
+
+  local output_dir="$PROJECT_DIR/.gas/bin"
+  mkdir -p "$output_dir"
+
+  local bin_name=""
+  bin_name="$(sanitize_binary_name "$BUILD_PM2_NAME")"
+  local output_bin="$output_dir/$bin_name"
+
+  log_info "Build Go target: $BUILD_GO_TARGET"
+  (
+    cd "$PROJECT_DIR"
+    go build -o "$output_bin" "$BUILD_GO_TARGET"
+  )
+
+  BUILD_START_FILE="$output_bin"
+  run_pm2_direct "$output_bin" "$BUILD_PM2_NAME" "$BUILD_PORT"
+}
+
+resolve_svelte_port() {
+  if [[ -n "$BUILD_PORT" ]]; then
+    validate_port "$BUILD_PORT" || die "Port tidak valid: $BUILD_PORT"
+    return
+  fi
+
+  local detected=""
+  detected="$(detect_env_port)"
+  local detected_port="${detected%%;*}"
+  local env_file="${detected#*;}"
+  BUILD_ENV_FILE=""
+
+  if (( UI_ENABLED == 1 )) && (( ASSUME_YES == 0 )); then
+    if [[ -n "$detected_port" ]]; then
+      BUILD_PORT="$(ui_input 'Port untuk app Svelte' "$detected_port")"
+      BUILD_ENV_FILE="$env_file"
+    else
+      BUILD_PORT="$(ui_input 'Port untuk app Svelte' '3000')"
+    fi
+  else
+    if [[ -n "$detected_port" ]]; then
+      BUILD_PORT="$detected_port"
+      BUILD_ENV_FILE="$env_file"
+    else
+      BUILD_PORT="3000"
+    fi
+  fi
+
+  validate_port "$BUILD_PORT" || die "Port tidak valid: $BUILD_PORT"
+}
+
+resolve_svelte_run_mode() {
+  if [[ -n "$BUILD_RUN_MODE" ]]; then
+    case "$BUILD_RUN_MODE" in
+      ecosystem|direct) return ;;
+      *) die "Nilai --run-mode harus ecosystem atau direct" ;;
+    esac
+  fi
+
+  if (( UI_ENABLED == 1 )) && (( ASSUME_YES == 0 )); then
+    BUILD_RUN_MODE="$(ui_select 'Pilih run mode PM2' 'ecosystem' ecosystem direct)"
+  else
+    BUILD_RUN_MODE="direct"
+  fi
+}
+
+detect_svelte_start_file() {
+  local direct_file="$PROJECT_DIR/build/index.js"
+  local fallback_file="$PROJECT_DIR/.svelte-kit/output/server/index.js"
+
+  if [[ -f "$direct_file" ]]; then
+    printf '%s\n' "$direct_file"
+    return
+  fi
+  if [[ -f "$fallback_file" ]]; then
+    printf '%s\n' "$fallback_file"
+    return
+  fi
+  return 1
+}
+
+write_ecosystem_file() {
+  local app_name="$1"
+  local port="$2"
+  local start_file="$3"
+
+  local ecosystem_file="$PROJECT_DIR/ecosystem.config.cjs"
+  local rel_start="$start_file"
+  rel_start="${rel_start#"$PROJECT_DIR/"}"
+
+  cat > "$ecosystem_file" <<EOF
+module.exports = {
+  apps: [
+    {
+      name: '${app_name}',
+      cwd: '${PROJECT_DIR}',
+      script: 'node',
+      args: '${rel_start}',
+      env: {
+        NODE_ENV: 'production',
+        PORT: '${port}'
+      }
+    }
+  ]
+};
+EOF
+
+  printf '%s\n' "$ecosystem_file"
+}
+
+run_pm2_ecosystem() {
+  local ecosystem_file="$1"
+  local app_name="$2"
+  local port="$3"
+
+  if pm2_app_exists "$app_name"; then
+    log_info "PM2 app '$app_name' sudah ada. Reload via ecosystem..."
+    if ! PORT="$port" pm2 reload "$ecosystem_file" --only "$app_name" --update-env; then
+      log_warn "Reload ecosystem gagal, fallback ke restart app."
+      PORT="$port" pm2 restart "$app_name" --update-env
+    fi
+  else
+    log_info "PM2 app '$app_name' belum ada. Start via ecosystem..."
+    pm2 start "$ecosystem_file" --only "$app_name"
+  fi
+}
+
+build_svelte_project() {
+  require_command node "Node.js tidak ditemukan. Install Node.js dulu."
+  require_command npm "npm tidak ditemukan. Install npm dulu."
+  require_command pm2 "PM2 tidak ditemukan. Install PM2 dulu."
+
+  resolve_pm2_name
+  resolve_svelte_port
+  resolve_svelte_run_mode
+
+  BUILD_NODE_VERSION="$(node -v 2>/dev/null || true)"
+  BUILD_NPM_VERSION="$(npm -v 2>/dev/null || true)"
+
+  log_info "Jalankan npm install..."
+  (
+    cd "$PROJECT_DIR"
+    npm install
+  )
+
+  log_info "Jalankan npm run build..."
+  (
+    cd "$PROJECT_DIR"
+    npm run build
+  )
+
+  local start_file=""
+  start_file="$(detect_svelte_start_file || true)"
+  if [[ -z "$start_file" ]]; then
+    die "File start Svelte tidak ditemukan. Cari build/index.js atau .svelte-kit/output/server/index.js."
+  fi
+
+  BUILD_START_FILE="$start_file"
+
+  if [[ "$BUILD_RUN_MODE" == "ecosystem" ]]; then
+    local ecosystem_file=""
+    ecosystem_file="$(write_ecosystem_file "$BUILD_PM2_NAME" "$BUILD_PORT" "$start_file")"
+    run_pm2_ecosystem "$ecosystem_file" "$BUILD_PM2_NAME" "$BUILD_PORT"
+  else
+    run_pm2_direct "$start_file" "$BUILD_PM2_NAME" "$BUILD_PORT"
+  fi
+}
+
+sql_literal() {
+  local value="$1"
+  if [[ -z "$value" ]]; then
+    printf 'NULL'
+    return
+  fi
+
+  local escaped="$value"
+  escaped="${escaped//\'/\'\'}"
+  printf "'%s'" "$escaped"
+}
+
+ensure_metadata_db() {
+  if ! command_exists sqlite3; then
+    log_warn "sqlite3 tidak ditemukan. Metadata global dilewati."
+    return 1
+  fi
+
+  local config_dir="$HOME/.config/gas"
+  local db_path="$config_dir/apps.db"
+  mkdir -p "$config_dir"
+
+  sqlite3 "$db_path" "
+    CREATE TABLE IF NOT EXISTS apps (
+      project_dir TEXT PRIMARY KEY,
+      app_type TEXT,
+      port INTEGER,
+      pm2_name TEXT,
+      env_file TEXT,
+      start_file TEXT,
+      run_mode TEXT,
+      node_version TEXT,
+      npm_version TEXT,
+      go_version TEXT,
+      updated_at TEXT
+    );
+  "
+
+  local columns=(
+    "project_dir|TEXT"
+    "app_type|TEXT"
+    "port|INTEGER"
+    "pm2_name|TEXT"
+    "env_file|TEXT"
+    "start_file|TEXT"
+    "run_mode|TEXT"
+    "node_version|TEXT"
+    "npm_version|TEXT"
+    "go_version|TEXT"
+    "updated_at|TEXT"
+  )
+
+  local item=""
+  for item in "${columns[@]}"; do
+    local column_name="${item%%|*}"
+    local column_type="${item#*|}"
+    local exists_count
+    exists_count="$(sqlite3 "$db_path" "SELECT COUNT(*) FROM pragma_table_info('apps') WHERE name='${column_name}';")"
+    if [[ "$exists_count" == "0" ]]; then
+      sqlite3 "$db_path" "ALTER TABLE apps ADD COLUMN ${column_name} ${column_type};"
+    fi
+  done
+
+  printf '%s\n' "$db_path"
+}
+
+write_metadata() {
+  local db_path=""
+  db_path="$(ensure_metadata_db || true)"
+  if [[ -z "$db_path" ]]; then
+    return
+  fi
+
+  local now_utc
+  now_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+  local project_dir_sql app_type_sql port_sql pm2_name_sql
+  local env_file_sql start_file_sql run_mode_sql
+  local node_version_sql npm_version_sql go_version_sql updated_at_sql
+
+  project_dir_sql="$(sql_literal "$PROJECT_DIR")"
+  app_type_sql="$(sql_literal "$BUILD_TYPE")"
+  port_sql="$(sql_literal "$BUILD_PORT")"
+  pm2_name_sql="$(sql_literal "$BUILD_PM2_NAME")"
+  env_file_sql="$(sql_literal "$BUILD_ENV_FILE")"
+  start_file_sql="$(sql_literal "$BUILD_START_FILE")"
+  run_mode_sql="$(sql_literal "$BUILD_RUN_MODE")"
+  node_version_sql="$(sql_literal "$BUILD_NODE_VERSION")"
+  npm_version_sql="$(sql_literal "$BUILD_NPM_VERSION")"
+  go_version_sql="$(sql_literal "$BUILD_GO_VERSION")"
+  updated_at_sql="$(sql_literal "$now_utc")"
+
+  sqlite3 "$db_path" "
+    BEGIN TRANSACTION;
+    DELETE FROM apps WHERE project_dir = ${project_dir_sql};
+    INSERT INTO apps (
+      project_dir,
+      app_type,
+      port,
+      pm2_name,
+      env_file,
+      start_file,
+      run_mode,
+      node_version,
+      npm_version,
+      go_version,
+      updated_at
+    ) VALUES (
+      ${project_dir_sql},
+      ${app_type_sql},
+      ${port_sql},
+      ${pm2_name_sql},
+      ${env_file_sql},
+      ${start_file_sql},
+      ${run_mode_sql},
+      ${node_version_sql},
+      ${npm_version_sql},
+      ${go_version_sql},
+      ${updated_at_sql}
+    );
+    COMMIT;
+  "
+
+  log_info "Metadata global disimpan di $db_path"
+}
+
+print_help_plain() {
+  cat <<EOF
+gas v$CLI_VERSION
+
+Perintah:
+  gas build [options]
+  gas help
+
+Build options:
+  --type go|svelte
+  --port <port>
+  --pm2-name <name>
+  --git-pull yes|no
+  --run-mode ecosystem|direct
+  --no-ui
+  --yes
+
+Contoh:
+  gas build
+  gas build --no-ui --type go --pm2-name diraaax-api --git-pull yes --yes
+  gas build --no-ui --type svelte --port 4001 --pm2-name diraaax-web --run-mode ecosystem --git-pull yes --yes
+EOF
+}
+
+print_help() {
+  if (( NO_UI == 0 )) && command_exists gum && is_interactive_terminal; then
+    gum style --bold "gas v$CLI_VERSION"
+    gum style "CLI build helper untuk project Go & Svelte"
+    printf '\n'
+    gum style --bold "Perintah"
+    printf '  gas build [options]\n'
+    printf '  gas help\n'
+    printf '\n'
+    gum style --bold "Build options"
+    printf '  --type go|svelte\n'
+    printf '  --port <port>\n'
+    printf '  --pm2-name <name>\n'
+    printf '  --git-pull yes|no\n'
+    printf '  --run-mode ecosystem|direct\n'
+    printf '  --no-ui\n'
+    printf '  --yes\n'
+    printf '\n'
+    gum style --bold "Contoh"
+    printf '  gas build\n'
+    printf '  gas build --no-ui --type go --pm2-name diraaax-api --git-pull yes --yes\n'
+    printf '  gas build --no-ui --type svelte --port 4001 --pm2-name diraaax-web --run-mode ecosystem --git-pull yes --yes\n'
+    return
+  fi
+
+  print_help_plain
+}
+
+parse_build_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --type)
+        [[ $# -ge 2 ]] || die "Flag --type butuh nilai."
+        BUILD_TYPE="$2"
+        shift 2
+        ;;
+      --type=*)
+        BUILD_TYPE="${1#*=}"
+        shift
+        ;;
+      --port)
+        [[ $# -ge 2 ]] || die "Flag --port butuh nilai."
+        BUILD_PORT="$2"
+        shift 2
+        ;;
+      --port=*)
+        BUILD_PORT="${1#*=}"
+        shift
+        ;;
+      --pm2-name)
+        [[ $# -ge 2 ]] || die "Flag --pm2-name butuh nilai."
+        BUILD_PM2_NAME="$2"
+        shift 2
+        ;;
+      --pm2-name=*)
+        BUILD_PM2_NAME="${1#*=}"
+        shift
+        ;;
+      --git-pull)
+        [[ $# -ge 2 ]] || die "Flag --git-pull butuh nilai yes|no."
+        BUILD_GIT_PULL="$(normalize_yes_no "$2" || true)"
+        [[ -n "$BUILD_GIT_PULL" ]] || die "Nilai --git-pull harus yes atau no."
+        shift 2
+        ;;
+      --git-pull=*)
+        BUILD_GIT_PULL="$(normalize_yes_no "${1#*=}" || true)"
+        [[ -n "$BUILD_GIT_PULL" ]] || die "Nilai --git-pull harus yes atau no."
+        shift
+        ;;
+      --run-mode)
+        [[ $# -ge 2 ]] || die "Flag --run-mode butuh nilai ecosystem|direct."
+        BUILD_RUN_MODE="$2"
+        shift 2
+        ;;
+      --run-mode=*)
+        BUILD_RUN_MODE="${1#*=}"
+        shift
+        ;;
+      --no-ui)
+        NO_UI=1
+        shift
+        ;;
+      --yes|-y)
+        ASSUME_YES=1
+        shift
+        ;;
+      --help|-h)
+        print_help_plain
+        exit 0
+        ;;
+      *)
+        die "Flag tidak dikenali: $1"
+        ;;
+    esac
+  done
+}
+
+run_build() {
+  parse_build_args "$@"
+  init_ui_mode
+
+  resolve_build_type
+  maybe_git_pull
+
+  case "$BUILD_TYPE" in
+    go)
+      build_go_project
+      ;;
+    svelte)
+      build_svelte_project
+      ;;
+    *)
+      die "Type tidak valid: $BUILD_TYPE"
+      ;;
+  esac
+
+  write_metadata
+
+  printf '\n'
+  printf 'Build selesai.\n'
+  printf 'Type      : %s\n' "$BUILD_TYPE"
+  printf 'PM2 name  : %s\n' "$BUILD_PM2_NAME"
+  printf 'Port      : %s\n' "$BUILD_PORT"
+  printf 'Run mode  : %s\n' "${BUILD_RUN_MODE:-direct}"
+}
+
+main() {
+  if [[ $# -eq 0 ]]; then
+    print_help
+    exit 0
+  fi
+
+  local command="$1"
+  shift || true
+
+  case "$command" in
+    build)
+      run_build "$@"
+      ;;
+    help|--help|-h)
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --no-ui) NO_UI=1 ;;
+        esac
+        shift
+      done
+      print_help
+      ;;
+    *)
+      die "Perintah tidak dikenal: $command. Coba 'gas help'."
+      ;;
+  esac
+}
+
+main "$@"
