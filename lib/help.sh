@@ -14,6 +14,7 @@ Perintah:
   gas rebuild [options]
   gas remove [options]
   gas doctor [options]
+  gas domain <add|remove|list>
   gas help
 
 Build options:
@@ -49,6 +50,7 @@ Detail per command:
   gas rebuild --help
   gas remove --help
   gas doctor --help
+  gas domain --help
 EOF
 }
 
@@ -169,6 +171,30 @@ Yang dicek:
 Opsi:
   --help
   --no-ui
+EOF
+}
+
+print_domain_help_plain() {
+  cat <<EOF
+gas domain - Setup domain nginx untuk app yang dikelola gas
+
+Subcommand:
+  gas domain add <domain> [--app <pm2-name>] [--port <port>] [--ssl yes|no] [--no-ui] [--yes]
+  gas domain remove <domain> [--no-ui] [--yes]
+  gas domain list [--no-ui]
+
+Flow add:
+  - Baca metadata app dari ~/.config/gas/apps.db
+  - Pilih app target (otomatis/interaktif/--app)
+  - Generate nginx config di /etc/nginx/sites-available/<domain>
+  - Symlink ke /etc/nginx/sites-enabled/<domain>
+  - nginx -t
+  - reload nginx
+  - opsional certbot --nginx -d <domain>
+
+Catatan:
+  - Perubahan nginx butuh akses root/sudo
+  - Domain harus valid (contoh: app.example.com)
 EOF
 }
 
@@ -297,6 +323,7 @@ Daftar command:
   rebuild  Build ulang pakai metadata build terakhir
   remove   Hapus PM2 app + metadata project saat ini
   doctor   Cek dependency environment server
+  domain   Setup domain nginx (add/remove/list)
   help     Tampilkan panduan lengkap command dan opsi
 
 Untuk detail command:
@@ -318,6 +345,7 @@ print_overview() {
     printf '  rebuild  Build ulang pakai metadata build terakhir\n'
     printf '  remove   Hapus PM2 app + metadata project saat ini\n'
     printf '  doctor   Cek dependency environment server\n'
+    printf '  domain   Setup domain nginx (add/remove/list)\n'
     printf '  help     Tampilkan panduan lengkap command dan opsi\n'
     printf '\n'
     gum style --italic "Untuk detail command: gas help atau gas <command> --help"
@@ -341,6 +369,7 @@ print_help() {
     printf '  gas rebuild [options]\n'
     printf '  gas remove [options]\n'
     printf '  gas doctor [options]\n'
+    printf '  gas domain <add|remove|list>\n'
     printf '  gas help\n'
     printf '\n'
     gum style --bold "Build options"
@@ -372,6 +401,8 @@ print_help() {
     printf '  gas rebuild --yes\n'
     printf '  gas remove --yes\n'
     printf '  gas doctor\n'
+    printf '  gas domain add app.example.com --app marbot-web --ssl yes\n'
+    printf '  gas domain list\n'
     printf '\n'
     gum style --bold "Detail per command"
     printf '  gas build --help\n'
@@ -382,6 +413,7 @@ print_help() {
     printf '  gas rebuild --help\n'
     printf '  gas remove --help\n'
     printf '  gas doctor --help\n'
+    printf '  gas domain --help\n'
     return
   fi
 
