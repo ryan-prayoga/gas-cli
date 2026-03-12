@@ -873,18 +873,88 @@ parse_build_args() {
   esac
 }
 
+try_load_saved_build_config() {
+  local db_path=""
+  db_path="$(ensure_metadata_db || true)"
+  if [[ -z "$db_path" ]]; then
+    return 1
+  fi
+
+  local row=""
+  row="$(query_build_config_row "$db_path" "$PROJECT_DIR" 2>/dev/null || true)"
+  if [[ -z "$row" ]]; then
+    return 1
+  fi
+
+  local saved_type saved_pm2 saved_port saved_strategy saved_deps saved_mode
+  IFS=$'\t' read -r saved_type saved_pm2 saved_port saved_strategy saved_deps saved_mode <<< "$row"
+
+  if [[ -z "$saved_type" ]]; then
+    return 1
+  fi
+
+  if (( UI_ENABLED == 1 )) && (( ASSUME_YES == 0 )); then
+    if (( GUM_ENABLED == 1 )); then
+      gum style --bold "Konfigurasi tersimpan ditemukan untuk folder ini"
+      gum style "Stack: $saved_type"
+      gum style "PM2 name: $saved_pm2"
+      gum style "Port: $saved_port"
+      if [[ -n "$saved_strategy" ]]; then
+        gum style "Strategy: $saved_strategy"
+      fi
+      gum style "Deps mode: $saved_deps"
+      printf '\n'
+    else
+      printf 'Konfigurasi tersimpan ditemukan untuk folder ini\n' >&2
+      printf '  Stack: %s\n' "$saved_type" >&2
+      printf '  PM2 name: %s\n' "$saved_pm2" >&2
+      printf '  Port: %s\n' "$saved_port" >&2
+      if [[ -n "$saved_strategy" ]]; then
+        printf '  Strategy: %s\n' "$saved_strategy" >&2
+      fi
+      printf '  Deps mode: %s\n' "$saved_deps" >&2
+      printf '\n' >&2
+    fi
+
+    local reuse_config=""
+    reuse_config="$(ui_select 'Pakai konfigurasi ini?' 'yes' yes no)"
+
+    if [[ "$reuse_config" != "yes" ]]; then
+      return 1
+    fi
+
+    BUILD_TYPE="$saved_type"
+    [[ -n "$BUILD_PM2_NAME" ]] || BUILD_PM2_NAME="$saved_pm2"
+    [[ -n "$BUILD_PORT" ]] || BUILD_PORT="$saved_port"
+    [[ -n "$BUILD_INSTALL_DEPS" ]] || BUILD_INSTALL_DEPS="${saved_deps:-auto}"
+    [[ -n "$BUILD_STRATEGY" ]] || BUILD_STRATEGY="$saved_strategy"
+
+    return 0
+  fi
+
+  return 1
+}
 
 collect_build_inputs() {
+  local reusing_config="$1"
+
   detect_stack
-  show_detected_stack
-  resolve_build_type
+  if [[ "$reusing_config" != "yes" ]]; then
+    show_detected_stack
+    resolve_build_type
+  else
+    log_info "Menggunakan konfigurasi tersimpan: $BUILD_TYPE"
+  fi
+
   maybe_git_pull
   detect_ecosystem_file || true
   if [[ -n "$BUILD_ECOSYSTEM_FILE" ]]; then
     parse_ecosystem_defaults "$BUILD_ECOSYSTEM_FILE" || true
     BUILD_ECOSYSTEM_STATE="existing"
-    show_ecosystem_detection
-    resolve_use_ecosystem_config
+    if [[ "$reusing_config" != "yes" ]]; then
+      show_ecosystem_detection
+      resolve_use_ecosystem_config
+    fi
   else
     BUILD_USE_ECOSYSTEM_CONFIG="no"
     BUILD_REUSE_ECOSYSTEM="no"
@@ -900,7 +970,9 @@ collect_build_inputs() {
       resolve_go_target
       ;;
     node-web)
-      resolve_build_strategy
+      if [[ "$reusing_config" != "yes" ]]; then
+        resolve_build_strategy
+      fi
       resolve_reuse_ecosystem
       resolve_pm2_name "${BUILD_ECOSYSTEM_DEFAULT_NAME:-$(basename "$PROJECT_DIR")}"
       resolve_node_port
@@ -979,7 +1051,12 @@ run_build() {
   SVELTE_BUILD_DONE=0
   SVELTE_LAST_ERROR=""
 
-  collect_build_inputs
+  local reusing_saved_config="no"
+  if try_load_saved_build_config; then
+    reusing_saved_config="yes"
+  fi
+
+  collect_build_inputs "$reusing_saved_config"
   print_build_plan
 
   if ! confirm_build_execution; then
