@@ -61,13 +61,23 @@ ui_input() {
   # gum input terlihat duplikat/kosong di beberapa terminal (tmux/ssh env tertentu).
   # Untuk stabilitas, input teks pakai prompt Bash biasa.
 
+  local value=""
+
   if [[ -n "$default_value" ]]; then
-    printf '%s (kosong = pakai default: %s): ' "$prompt" "$default_value" >&2
+    # Gunakan readline prefill jika tersedia agar Enter langsung pakai default.
+    if [[ -t 0 && -t 1 ]]; then
+      printf '%s: ' "$prompt" >&2
+      if read -r -e -i "$default_value" value; then
+        printf '%s\n' "${value:-$default_value}"
+        return
+      fi
+    fi
+
+    printf '%s [%s]: ' "$prompt" "$default_value" >&2
   else
     printf '%s: ' "$prompt" >&2
   fi
 
-  local value=""
   read -r value || true
 
   if [[ -z "$value" ]]; then
