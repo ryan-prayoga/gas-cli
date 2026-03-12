@@ -41,6 +41,15 @@ ensure_metadata_db() {
       verify_message TEXT,
       updated_at TEXT
     );
+    CREATE TABLE IF NOT EXISTS domains (
+      domain TEXT PRIMARY KEY,
+      project_dir TEXT,
+      pm2_name TEXT,
+      port INTEGER,
+      nginx_conf TEXT,
+      ssl_enabled TEXT,
+      updated_at TEXT
+    );
   "
 
   local columns=(
@@ -69,6 +78,26 @@ ensure_metadata_db() {
     exists_count="$(sqlite3 -cmd ".timeout 3000" "$db_path" "SELECT COUNT(*) FROM pragma_table_info('apps') WHERE name='${column_name}';")"
     if [[ "$exists_count" == "0" ]]; then
       sqlite3 -cmd ".timeout 3000" "$db_path" "ALTER TABLE apps ADD COLUMN ${column_name} ${column_type};"
+    fi
+  done
+
+  local domain_columns=(
+    "domain|TEXT"
+    "project_dir|TEXT"
+    "pm2_name|TEXT"
+    "port|INTEGER"
+    "nginx_conf|TEXT"
+    "ssl_enabled|TEXT"
+    "updated_at|TEXT"
+  )
+
+  for item in "${domain_columns[@]}"; do
+    local column_name="${item%%|*}"
+    local column_type="${item#*|}"
+    local exists_count
+    exists_count="$(sqlite3 -cmd ".timeout 3000" "$db_path" "SELECT COUNT(*) FROM pragma_table_info('domains') WHERE name='${column_name}';")"
+    if [[ "$exists_count" == "0" ]]; then
+      sqlite3 -cmd ".timeout 3000" "$db_path" "ALTER TABLE domains ADD COLUMN ${column_name} ${column_type};"
     fi
   done
 
@@ -141,6 +170,119 @@ query_list_rows() {
     FROM apps
     ORDER BY updated_at DESC;
   "
+}
+
+query_apps_candidate_rows() {
+  local db_path="$1"
+  sqlite3 -cmd ".timeout 3000" -separator $'\t' "$db_path" "
+    SELECT
+      IFNULL(project_dir, ''),
+      IFNULL(app_type, ''),
+      IFNULL(pm2_name, ''),
+      IFNULL(port, '')
+    FROM apps
+    ORDER BY updated_at DESC;
+  "
+}
+
+query_app_by_pm2_name() {
+  local db_path="$1"
+  local pm2_name="$2"
+  sqlite3 -cmd ".timeout 3000" -separator $'\t' "$db_path" "
+    SELECT
+      IFNULL(project_dir, ''),
+      IFNULL(app_type, ''),
+      IFNULL(pm2_name, ''),
+      IFNULL(port, '')
+    FROM apps
+    WHERE pm2_name = $(sql_literal "$pm2_name")
+    ORDER BY updated_at DESC
+    LIMIT 1;
+  "
+}
+
+query_domain_rows() {
+  local db_path="$1"
+  sqlite3 -cmd ".timeout 3000" -separator $'\t' "$db_path" "
+    SELECT
+      IFNULL(domain, ''),
+      IFNULL(pm2_name, ''),
+      IFNULL(port, ''),
+      IFNULL(ssl_enabled, ''),
+      IFNULL(updated_at, ''),
+      IFNULL(project_dir, '')
+    FROM domains
+    ORDER BY updated_at DESC;
+  "
+}
+
+query_domain_row() {
+  local db_path="$1"
+  local domain="$2"
+  sqlite3 -cmd ".timeout 3000" -separator $'\t' "$db_path" "
+    SELECT
+      IFNULL(domain, ''),
+      IFNULL(project_dir, ''),
+      IFNULL(pm2_name, ''),
+      IFNULL(port, ''),
+      IFNULL(nginx_conf, ''),
+      IFNULL(ssl_enabled, ''),
+      IFNULL(updated_at, '')
+    FROM domains
+    WHERE domain = $(sql_literal "$domain")
+    LIMIT 1;
+  "
+}
+
+upsert_domain_metadata() {
+  local db_path="$1"
+  local domain="$2"
+  local project_dir="$3"
+  local pm2_name="$4"
+  local port="$5"
+  local nginx_conf="$6"
+  local ssl_enabled="$7"
+
+  local now_utc
+  now_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+  local domain_sql project_dir_sql pm2_name_sql port_sql nginx_conf_sql ssl_enabled_sql updated_at_sql
+  domain_sql="$(sql_literal "$domain")"
+  project_dir_sql="$(sql_literal "$project_dir")"
+  pm2_name_sql="$(sql_literal "$pm2_name")"
+  port_sql="$(sql_literal "$port")"
+  nginx_conf_sql="$(sql_literal "$nginx_conf")"
+  ssl_enabled_sql="$(sql_literal "$ssl_enabled")"
+  updated_at_sql="$(sql_literal "$now_utc")"
+
+  sqlite3 -cmd ".timeout 3000" "$db_path" "
+    BEGIN TRANSACTION;
+    DELETE FROM domains WHERE domain = ${domain_sql};
+    INSERT INTO domains (
+      domain,
+      project_dir,
+      pm2_name,
+      port,
+      nginx_conf,
+      ssl_enabled,
+      updated_at
+    ) VALUES (
+      ${domain_sql},
+      ${project_dir_sql},
+      ${pm2_name_sql},
+      ${port_sql},
+      ${nginx_conf_sql},
+      ${ssl_enabled_sql},
+      ${updated_at_sql}
+    );
+    COMMIT;
+  "
+}
+
+delete_domain_metadata() {
+  local db_path="$1"
+  local domain="$2"
+  sqlite3 -cmd ".timeout 3000" "$db_path" "DELETE FROM domains WHERE domain = $(sql_literal "$domain");"
 }
 
 delete_project_metadata() {
