@@ -58,23 +58,38 @@ ui_input() {
   local prompt="$1"
   local default_value="${2:-}"
   # NOTE:
-  # gum input terlihat duplikat/kosong di beberapa terminal (tmux/ssh env tertentu).
-  # Untuk stabilitas, input teks pakai prompt Bash biasa.
+  # gum input terlihat duplikat/kosong di beberapa terminal (tmux/ssh env tertentu),
+  # jadi input teks tetap pakai Bash read.
+  # Fungsi ini sering dipakai via command substitution (stdout ditangkap variabel),
+  # maka prompt interaktif harus ke /dev/tty agar tetap tampil normal.
 
   local value=""
+  local use_tty=0
+  if [[ -r /dev/tty && -w /dev/tty ]]; then
+    use_tty=1
+  fi
 
   if [[ -n "$default_value" ]]; then
     # Gunakan readline prefill jika tersedia agar Enter langsung pakai default.
-    if [[ -t 0 && -t 1 ]]; then
-      printf '%s: ' "$prompt" >&2
-      if read -r -e -i "$default_value" value; then
+    if (( use_tty == 1 )); then
+      if read -r -e -i "$default_value" -p "$prompt: " value < /dev/tty > /dev/tty 2>/dev/tty; then
         printf '%s\n' "${value:-$default_value}"
         return
       fi
+      printf '%s [%s]: ' "$prompt" "$default_value" > /dev/tty
+      read -r value < /dev/tty || true
+      printf '%s\n' "${value:-$default_value}"
+      return
     fi
 
     printf '%s [%s]: ' "$prompt" "$default_value" >&2
   else
+    if (( use_tty == 1 )); then
+      printf '%s: ' "$prompt" > /dev/tty
+      read -r value < /dev/tty || true
+      printf '%s\n' "$value"
+      return
+    fi
     printf '%s: ' "$prompt" >&2
   fi
 
