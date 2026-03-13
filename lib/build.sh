@@ -910,13 +910,17 @@ try_load_saved_build_config() {
     return 1
   fi
 
+  local normalized_saved_type=""
+  normalized_saved_type="$(normalize_build_type "$saved_type" || true)"
+  [[ -n "$normalized_saved_type" ]] || return 1
+
   if (( UI_ENABLED == 1 )) && (( ASSUME_YES == 0 )); then
     if (( GUM_ENABLED == 1 )); then
       gum style --bold "Konfigurasi tersimpan ditemukan untuk folder ini"
       gum style "Stack: $saved_type"
       gum style "PM2 name: $saved_pm2"
       gum style "Port: $saved_port"
-      if [[ -n "$saved_strategy" ]]; then
+      if [[ "$normalized_saved_type" == "node-web" && -n "$saved_strategy" ]]; then
         gum style "Strategy: $saved_strategy"
       fi
       gum style "Deps mode: $saved_deps"
@@ -926,7 +930,7 @@ try_load_saved_build_config() {
       printf '  Stack: %s\n' "$saved_type" >&2
       printf '  PM2 name: %s\n' "$saved_pm2" >&2
       printf '  Port: %s\n' "$saved_port" >&2
-      if [[ -n "$saved_strategy" ]]; then
+      if [[ "$normalized_saved_type" == "node-web" && -n "$saved_strategy" ]]; then
         printf '  Strategy: %s\n' "$saved_strategy" >&2
       fi
       printf '  Deps mode: %s\n' "$saved_deps" >&2
@@ -940,12 +944,13 @@ try_load_saved_build_config() {
       return 1
     fi
 
-    BUILD_TYPE="$(normalize_build_type "$saved_type" || true)"
-    [[ -n "$BUILD_TYPE" ]] || return 1
+    BUILD_TYPE="$normalized_saved_type"
     [[ -n "$BUILD_PM2_NAME" ]] || BUILD_PM2_NAME="$saved_pm2"
     [[ -n "$BUILD_PORT" ]] || BUILD_PORT="$saved_port"
     [[ -n "$BUILD_INSTALL_DEPS" ]] || BUILD_INSTALL_DEPS="${saved_deps:-auto}"
-    [[ -n "$BUILD_STRATEGY" ]] || BUILD_STRATEGY="$saved_strategy"
+    if [[ "$BUILD_TYPE" == "node-web" ]]; then
+      [[ -n "$BUILD_STRATEGY" ]] || BUILD_STRATEGY="$saved_strategy"
+    fi
 
     return 0
   fi
