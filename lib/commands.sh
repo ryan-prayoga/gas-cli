@@ -926,6 +926,9 @@ main() {
     build)
       run_build "$@"
       ;;
+    deploy)
+      run_deploy "$@"
+      ;;
     info)
       run_info "$@"
       ;;

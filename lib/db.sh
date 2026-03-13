@@ -50,6 +50,23 @@ ensure_metadata_db() {
       ssl_enabled TEXT,
       updated_at TEXT
     );
+    CREATE TABLE IF NOT EXISTS deployments (
+      domain TEXT PRIMARY KEY,
+      project_dir TEXT,
+      pm2_name TEXT,
+      port INTEGER,
+      server_type TEXT,
+      deploy_mode TEXT,
+      ssl_mode TEXT,
+      canonical_host TEXT,
+      alias_domains TEXT,
+      app_map TEXT,
+      nginx_conf_path TEXT,
+      enabled INTEGER,
+      notes TEXT,
+      created_at TEXT,
+      updated_at TEXT
+    );
   "
 
   local columns=(
@@ -98,6 +115,34 @@ ensure_metadata_db() {
     exists_count="$(sqlite3 -cmd ".timeout 3000" "$db_path" "SELECT COUNT(*) FROM pragma_table_info('domains') WHERE name='${column_name}';")"
     if [[ "$exists_count" == "0" ]]; then
       sqlite3 -cmd ".timeout 3000" "$db_path" "ALTER TABLE domains ADD COLUMN ${column_name} ${column_type};"
+    fi
+  done
+
+  local deployment_columns=(
+    "domain|TEXT"
+    "project_dir|TEXT"
+    "pm2_name|TEXT"
+    "port|INTEGER"
+    "server_type|TEXT"
+    "deploy_mode|TEXT"
+    "ssl_mode|TEXT"
+    "canonical_host|TEXT"
+    "alias_domains|TEXT"
+    "app_map|TEXT"
+    "nginx_conf_path|TEXT"
+    "enabled|INTEGER"
+    "notes|TEXT"
+    "created_at|TEXT"
+    "updated_at|TEXT"
+  )
+
+  for item in "${deployment_columns[@]}"; do
+    local column_name="${item%%|*}"
+    local column_type="${item#*|}"
+    local exists_count
+    exists_count="$(sqlite3 -cmd ".timeout 3000" "$db_path" "SELECT COUNT(*) FROM pragma_table_info('deployments') WHERE name='${column_name}';")"
+    if [[ "$exists_count" == "0" ]]; then
+      sqlite3 -cmd ".timeout 3000" "$db_path" "ALTER TABLE deployments ADD COLUMN ${column_name} ${column_type};"
     fi
   done
 
@@ -234,6 +279,51 @@ query_domain_row() {
   "
 }
 
+query_deployment_rows() {
+  local db_path="$1"
+  sqlite3 -cmd ".timeout 3000" -separator $'\t' "$db_path" "
+    SELECT
+      IFNULL(domain, ''),
+      IFNULL(server_type, ''),
+      IFNULL(deploy_mode, ''),
+      IFNULL(ssl_mode, ''),
+      IFNULL(enabled, 0),
+      IFNULL(updated_at, ''),
+      IFNULL(pm2_name, ''),
+      IFNULL(port, ''),
+      IFNULL(alias_domains, ''),
+      IFNULL(project_dir, '')
+    FROM deployments
+    ORDER BY updated_at DESC, domain ASC;
+  "
+}
+
+query_deployment_row() {
+  local db_path="$1"
+  local domain="$2"
+  sqlite3 -cmd ".timeout 3000" -separator $'\t' "$db_path" "
+    SELECT
+      IFNULL(domain, ''),
+      IFNULL(project_dir, ''),
+      IFNULL(pm2_name, ''),
+      IFNULL(port, ''),
+      IFNULL(server_type, ''),
+      IFNULL(deploy_mode, ''),
+      IFNULL(ssl_mode, ''),
+      IFNULL(canonical_host, ''),
+      IFNULL(alias_domains, ''),
+      IFNULL(app_map, ''),
+      IFNULL(nginx_conf_path, ''),
+      IFNULL(enabled, 0),
+      IFNULL(notes, ''),
+      IFNULL(created_at, ''),
+      IFNULL(updated_at, '')
+    FROM deployments
+    WHERE domain = $(sql_literal "$domain")
+    LIMIT 1;
+  "
+}
+
 upsert_domain_metadata() {
   local db_path="$1"
   local domain="$2"
@@ -279,10 +369,81 @@ upsert_domain_metadata() {
   "
 }
 
+upsert_deployment_metadata() {
+  local db_path="$1"
+  local domain="$2"
+  local project_dir="$3"
+  local pm2_name="$4"
+  local port="$5"
+  local server_type="$6"
+  local deploy_mode="$7"
+  local ssl_mode="$8"
+  local canonical_host="$9"
+  local alias_domains="${10}"
+  local app_map="${11}"
+  local nginx_conf_path="${12}"
+  local enabled="${13}"
+  local notes="${14:-}"
+
+  local now_utc
+  now_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+  local existing_created_at
+  existing_created_at="$(sqlite3 -cmd ".timeout 3000" -noheader "$db_path" "SELECT created_at FROM deployments WHERE domain = $(sql_literal "$domain") LIMIT 1;" 2>/dev/null || true)"
+  if [[ -z "$existing_created_at" ]]; then
+    existing_created_at="$now_utc"
+  fi
+
+  sqlite3 -cmd ".timeout 3000" "$db_path" "
+    BEGIN TRANSACTION;
+    DELETE FROM deployments WHERE domain = $(sql_literal "$domain");
+    INSERT INTO deployments (
+      domain,
+      project_dir,
+      pm2_name,
+      port,
+      server_type,
+      deploy_mode,
+      ssl_mode,
+      canonical_host,
+      alias_domains,
+      app_map,
+      nginx_conf_path,
+      enabled,
+      notes,
+      created_at,
+      updated_at
+    ) VALUES (
+      $(sql_literal "$domain"),
+      $(sql_literal "$project_dir"),
+      $(sql_literal "$pm2_name"),
+      $(sql_literal "$port"),
+      $(sql_literal "$server_type"),
+      $(sql_literal "$deploy_mode"),
+      $(sql_literal "$ssl_mode"),
+      $(sql_literal "$canonical_host"),
+      $(sql_literal "$alias_domains"),
+      $(sql_literal "$app_map"),
+      $(sql_literal "$nginx_conf_path"),
+      $(sql_literal "$enabled"),
+      $(sql_literal "$notes"),
+      $(sql_literal "$existing_created_at"),
+      $(sql_literal "$now_utc")
+    );
+    COMMIT;
+  "
+}
+
 delete_domain_metadata() {
   local db_path="$1"
   local domain="$2"
   sqlite3 -cmd ".timeout 3000" "$db_path" "DELETE FROM domains WHERE domain = $(sql_literal "$domain");"
+}
+
+delete_deployment_metadata() {
+  local db_path="$1"
+  local domain="$2"
+  sqlite3 -cmd ".timeout 3000" "$db_path" "DELETE FROM deployments WHERE domain = $(sql_literal "$domain");"
 }
 
 delete_project_metadata() {

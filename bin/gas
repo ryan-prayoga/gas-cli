@@ -21,6 +21,7 @@ source "$ROOT_DIR/lib/nginx.sh"
 source "$ROOT_DIR/lib/db.sh"
 source "$ROOT_DIR/lib/help.sh"
 source "$ROOT_DIR/lib/build.sh"
+source "$ROOT_DIR/lib/deploy.sh"
 source "$ROOT_DIR/lib/commands.sh"
 
 main "$@"

@@ -102,6 +102,61 @@ ui_input() {
   fi
 }
 
+ui_confirm() {
+  local prompt="$1"
+  local default_value="${2:-yes}"
+  local normalized_default
+  normalized_default="$(normalize_yes_no "$default_value" || true)"
+  if [[ -z "$normalized_default" ]]; then
+    normalized_default="yes"
+  fi
+
+  if (( ASSUME_YES == 1 )); then
+    [[ "$normalized_default" == "yes" ]]
+    return
+  fi
+
+  if (( UI_ENABLED == 0 )); then
+    [[ "$normalized_default" == "yes" ]]
+    return
+  fi
+
+  if (( GUM_ENABLED == 1 )); then
+    if [[ "$normalized_default" == "yes" ]]; then
+      gum confirm "$prompt"
+      return
+    fi
+    if gum confirm --default=false "$prompt"; then
+      return 0
+    fi
+    return 1
+  fi
+
+  local answer=""
+  answer="$(ui_select "$prompt" "$normalized_default" yes no)"
+  [[ "$answer" == "yes" ]]
+}
+
+ui_input_optional_csv() {
+  local prompt="$1"
+  local default_value="${2:-}"
+  local raw_value=""
+  raw_value="$(ui_input "$prompt" "$default_value")"
+  printf '%s\n' "$raw_value" | awk -F',' '
+    {
+      out=""
+      for (i = 1; i <= NF; i++) {
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", $i)
+        if ($i != "") {
+          if (out != "") out = out ","
+          out = out $i
+        }
+      }
+      print out
+    }
+  '
+}
+
 resolve_pm2_name() {
   if [[ -n "$BUILD_PM2_NAME" ]]; then
     return
