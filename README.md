@@ -10,6 +10,7 @@ CLI Bash untuk build dan run project **Go** dan **Node web ecosystem** (SvelteKi
 - `gas deploy remove`
 - `gas deploy doctor`
 - `gas deploy preview`
+- `gas domain` sebagai legacy alias yang diarahkan ke engine deploy baru
 - `gas info`
 - `gas list`
 - `gas help`
@@ -190,6 +191,18 @@ gas deploy remove --domain app.example.com --yes
 gas deploy doctor
 ```
 
+Smoke preview lokal:
+
+```bash
+./scripts/smoke-deploy-preview.sh
+```
+
+Script ini:
+- membuat `HOME` sementara
+- mengisi fixture metadata app ke SQLite
+- menjalankan preview untuk mode `single-app`, `frontend-backend-split`, dan `custom-multi-location`
+- tidak menyentuh nginx sistem
+
 Catatan SSL dan DNS:
 - Mode `certbot-nginx` butuh domain resolve ke server target.
 - Port 80/443 harus bisa diakses dari internet untuk challenge Let’s Encrypt.
@@ -204,3 +217,4 @@ Catatan SSL dan DNS:
 - Sesudah run, dilakukan verifikasi runtime (PM2 status + port listen + HTTP localhost jika `curl` tersedia).
 - Metadata build disimpan global di `~/.config/gas/apps.db` dengan migrasi kolom ringan.
 - Metadata deploy disimpan di tabel `deployments` dan tetap menjaga tabel `domains` untuk kompatibilitas lama.
+- `gas domain` tetap tersedia untuk kompatibilitas, tapi sekarang hanya menjadi adapter ke flow `gas deploy`.
