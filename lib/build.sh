@@ -760,6 +760,23 @@ build_svelte_project() {
   build_node_web_project
 }
 
+normalize_build_type() {
+  local raw_type="${1:-}"
+  raw_type="$(printf '%s' "$raw_type" | tr '[:upper:]' '[:lower:]')"
+
+  case "$raw_type" in
+    go)
+      printf '%s\n' "go"
+      ;;
+    svelte|sveltekit|next|nextjs|nuxt|vite|node|node-web|web)
+      printf '%s\n' "node-web"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 
 parse_build_args() {
   while [[ $# -gt 0 ]]; do
@@ -923,7 +940,8 @@ try_load_saved_build_config() {
       return 1
     fi
 
-    BUILD_TYPE="$saved_type"
+    BUILD_TYPE="$(normalize_build_type "$saved_type" || true)"
+    [[ -n "$BUILD_TYPE" ]] || return 1
     [[ -n "$BUILD_PM2_NAME" ]] || BUILD_PM2_NAME="$saved_pm2"
     [[ -n "$BUILD_PORT" ]] || BUILD_PORT="$saved_port"
     [[ -n "$BUILD_INSTALL_DEPS" ]] || BUILD_INSTALL_DEPS="${saved_deps:-auto}"
