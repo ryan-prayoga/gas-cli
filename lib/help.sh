@@ -7,6 +7,8 @@ gas v$CLI_VERSION
 
 Perintah:
   gas build [options]
+  gas deploy [options]
+  gas deploy <list|remove|doctor|preview> [options]
   gas info
   gas list
   gas restart [pm2-name]
@@ -37,12 +39,14 @@ Catatan:
 
 Contoh:
   gas build
+  gas deploy
   gas build --no-ui --type go --pm2-name diraaax-api --git-pull yes --yes
   gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --strategy auto --git-pull no --yes
   gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --strategy ecosystem --reuse-ecosystem yes --git-pull no --yes
 
 Detail per command:
   gas build --help
+  gas deploy --help
   gas info --help
   gas list --help
   gas restart --help
@@ -51,6 +55,248 @@ Detail per command:
   gas remove --help
   gas doctor --help
   gas domain --help
+EOF
+}
+
+print_deploy_help_plain() {
+  cat <<EOF
+gas deploy - Wizard deploy Nginx untuk app yang dikelola gas
+
+Pemakaian:
+  gas deploy
+  gas deploy add [options]
+  gas deploy preview [options]
+  gas deploy list
+  gas deploy remove --domain <domain>
+  gas deploy doctor
+
+Wizard utama:
+  - pilih app dari metadata gas
+  - pilih domain, alias, dan canonical host
+  - pilih mode deploy + routing
+  - atur SSL, backup, test, reload, verify
+  - preview config nginx
+  - apply config dan simpan metadata deployment
+
+Mode deploy:
+  --mode single-app
+    Semua request diarahkan ke satu app/upstream.
+
+  --mode frontend-backend-split
+    Route / ke frontend dan /api/ ke backend.
+
+  --mode custom-multi-location
+    Tambah beberapa location custom satu per satu atau via --location.
+
+  --mode static-only
+    Serve file static dari root directory.
+
+  --mode redirect-only
+    Domain ini hanya redirect ke target lain.
+
+  --mode maintenance
+    Tampilkan halaman maintenance statis sementara.
+
+Mode SSL:
+  --ssl none
+    Deploy HTTP saja.
+
+  --ssl certbot-nginx
+    Gunakan Certbot plugin nginx untuk membuat/mengelola sertifikat HTTPS.
+
+  --ssl existing-certificate
+    Pakai file sertifikat yang sudah ada via --ssl-cert dan --ssl-key.
+
+Flag penting:
+  --domain <domain>
+    Domain utama site ini.
+
+  --app <pm2-name>
+    App default untuk mode single-app.
+
+  --frontend <pm2-name>
+    App frontend untuk route /.
+
+  --backend <pm2-name>
+    App backend untuk route /api/.
+
+  --alias-domain <domain>
+    Tambah alias domain lain. Bisa dipakai berulang.
+
+  --www yes|no
+    Tambahkan alias www otomatis.
+
+  --canonical apex|www|none|custom
+    Pilih host utama, dan redirect host alternatif ke host utama.
+
+  --canonical-host <domain>
+    Host utama jika --canonical custom.
+
+  --uploads <path>
+    Alias static directory, cocok untuk file upload publik.
+
+  --location '<path>=proxy:<app|host:port>'
+  --location '<path>=alias:<dir>'
+  --location '<path>=root:<dir>'
+  --location '<path>=redirect:<url>'
+  --location '<path>=return:<code>:<text>'
+    Tambah location custom untuk mode custom-multi-location.
+
+  --upstream-host <host>
+    Host upstream default untuk proxy_pass. Default: 127.0.0.1
+
+  --websocket yes|no
+    Tambahkan header Upgrade/Connection untuk app yang butuh websocket.
+
+  --client-max-body-size <size>
+    Batas ukuran request body, mis. 10m, 50m, 100m.
+
+  --timeout <seconds>
+    Waktu tunggu proxy untuk connect/read/send.
+
+  --gzip on|off
+    Preset gzip dasar.
+
+  --security-headers basic|strict|off
+    Preset header keamanan umum.
+
+  --static-cache basic|aggressive|off
+    Preset cache header untuk location static alias/root.
+
+  --dry-run
+    Generate dan tampilkan config tanpa menulis file atau reload nginx.
+
+  --preview
+    Tampilkan config hasil generate sebelum apply.
+
+  --save-preview <path|temp>
+    Simpan hasil preview ke file.
+
+  --backup yes|no
+    Simpan backup config lama sebelum overwrite.
+
+  --reuse-existing yes|no
+    Jika config domain sudah ada, izinkan update/overwrite.
+
+  --test yes|no
+    Jalankan nginx -t sebelum reload.
+
+  --reload yes|no
+    Reload nginx otomatis jika config valid.
+
+  --verify yes|no
+    Jalankan verifikasi lokal/domain setelah deploy selesai.
+
+  --catchall yes|no
+    Buat/atur default server return 444 untuk request tidak dikenal.
+
+  --disable-default-site yes|no
+    Disable site default nginx.
+
+  --force-https yes|no
+    Redirect HTTP ke HTTPS jika SSL aktif.
+
+  --access-log yes|no
+    Aktif/nonaktif access log site.
+
+  --error-page-root <dir>
+    Root directory untuk halaman error 50x custom.
+
+  --keep-old-config yes|no
+    Simpan rollback point config lama sesudah deploy.
+
+  --no-ui
+  --yes
+  --help
+
+Contoh:
+  gas deploy
+  gas deploy --no-ui --app diraaax-frontend --domain diraaax.ryannn.net --mode single-app --ssl certbot-nginx --yes
+  gas deploy --no-ui --frontend diraaax-frontend --backend diraaax-backend --domain diraaax.ryannn.net --mode frontend-backend-split --uploads /home/ubuntu/projects/diraaax/backend/uploads --ssl certbot-nginx --yes
+  gas deploy --no-ui --mode custom-multi-location --domain simpeg.ryannn.net --location '/=proxy:simpeg-web' --location '/api/=proxy:simpeg-api' --location '/uploads/=alias:/home/ubuntu/uploads' --ssl none --preview --yes
+EOF
+}
+
+print_deploy_list_help_plain() {
+  cat <<EOF
+gas deploy list - Tampilkan daftar site/domain yang dikelola gas
+
+Yang ditampilkan:
+  - Domain utama
+  - Server type
+  - Deploy mode
+  - SSL mode
+  - Status enabled
+  - Updated at
+  - Primary app
+
+Opsi:
+  --help
+  --no-ui
+EOF
+}
+
+print_deploy_remove_help_plain() {
+  cat <<EOF
+gas deploy remove - Hapus config site/domain nginx yang dikelola gas
+
+Pemakaian:
+  gas deploy remove --domain app.example.com
+  gas deploy remove app.example.com
+
+Opsi:
+  --domain <domain>
+    Domain target yang mau dihapus.
+
+  --remove-enabled yes|no
+    Hapus symlink enabled site. Default: yes
+
+  --remove-config yes|no
+    Hapus file config di sites-available. Default: yes
+
+  --remove-test yes|no
+    Jalankan nginx -t sesudah remove. Default: yes
+
+  --remove-reload yes|no
+    Reload nginx sesudah remove. Default: yes
+
+  --no-ui
+  --yes
+  --help
+EOF
+}
+
+print_deploy_doctor_help_plain() {
+  cat <<EOF
+gas deploy doctor - Cek dependency deploy dan readiness server
+
+Yang dicek:
+  nginx, certbot, python3-certbot-nginx, openssl, pm2, sqlite3, gum, curl, ss/iproute2, git
+  plus privilege root/sudo dan indikasi listener lokal port 80/443
+
+Opsi:
+  --help
+  --no-ui
+EOF
+}
+
+print_deploy_preview_help_plain() {
+  cat <<EOF
+gas deploy preview - Generate preview config nginx tanpa apply
+
+Pemakaian:
+  gas deploy preview --app marbot-web --domain app.example.com --mode single-app
+  gas deploy preview --mode custom-multi-location --domain api.example.com --location '/=proxy:marbot-web'
+
+Flag tambahan:
+  --save-preview <path|temp>
+    Simpan hasil preview ke file.
+
+  --dry-run
+    Pastikan tidak ada write/reload.
+
+Lihat juga:
+  gas deploy --help
 EOF
 }
 
@@ -177,6 +423,10 @@ EOF
 print_domain_help_plain() {
   cat <<EOF
 gas domain - Setup domain nginx untuk app yang dikelola gas
+
+Catatan:
+  Command ini legacy alias.
+  Untuk flow deploy yang lebih lengkap, pakai: gas deploy
 
 Subcommand:
   gas domain add <domain> [--app <pm2-name>] [--port <port>] [--ssl yes|no] [--no-ui] [--yes]
@@ -316,6 +566,7 @@ gas v$CLI_VERSION
 
 Daftar command:
   build    Build project Go/Node web dengan stack detect + strategy
+  deploy   Wizard deploy nginx (add/list/remove/doctor/preview)
   info     Lihat metadata build project pada folder saat ini
   list     Lihat daftar semua project yang pernah dibuild
   restart  Restart PM2 app dari metadata atau pm2-name manual
@@ -323,7 +574,7 @@ Daftar command:
   rebuild  Build ulang pakai metadata build terakhir
   remove   Hapus PM2 app + metadata project saat ini
   doctor   Cek dependency environment server
-  domain   Setup domain nginx (add/remove/list)
+  domain   Legacy alias setup domain nginx (add/remove/list)
   help     Tampilkan panduan lengkap command dan opsi
 
 Untuk detail command:
@@ -338,6 +589,7 @@ print_overview() {
     printf '\n'
     gum style --bold "Daftar command"
     printf '  build    Build project Go/Node web dengan stack detect + strategy\n'
+    printf '  deploy   Wizard deploy nginx (add/list/remove/doctor/preview)\n'
     printf '  info     Lihat metadata build project pada folder saat ini\n'
     printf '  list     Lihat daftar semua project yang pernah dibuild\n'
     printf '  restart  Restart PM2 app dari metadata atau pm2-name manual\n'
@@ -345,7 +597,7 @@ print_overview() {
     printf '  rebuild  Build ulang pakai metadata build terakhir\n'
     printf '  remove   Hapus PM2 app + metadata project saat ini\n'
     printf '  doctor   Cek dependency environment server\n'
-    printf '  domain   Setup domain nginx (add/remove/list)\n'
+    printf '  domain   Legacy alias setup domain nginx (add/remove/list)\n'
     printf '  help     Tampilkan panduan lengkap command dan opsi\n'
     printf '\n'
     gum style --italic "Untuk detail command: gas help atau gas <command> --help"
@@ -358,10 +610,12 @@ print_overview() {
 print_help() {
   if (( NO_UI == 0 )) && command_exists gum && is_interactive_terminal; then
     gum style --bold "gas v$CLI_VERSION"
-    gum style "CLI build helper untuk project Go dan Node ecosystem"
+    gum style "CLI build + deploy helper untuk project Go dan Node ecosystem"
     printf '\n'
     gum style --bold "Perintah"
     printf '  gas build [options]\n'
+    printf '  gas deploy [options]\n'
+    printf '  gas deploy <list|remove|doctor|preview> [options]\n'
     printf '  gas info\n'
     printf '  gas list\n'
     printf '  gas restart [pm2-name]\n'
@@ -392,6 +646,9 @@ print_help() {
     printf '\n'
     gum style --bold "Contoh"
     printf '  gas build\n'
+    printf '  gas deploy\n'
+    printf '  gas deploy --no-ui --app marbot-web --domain app.example.com --mode single-app --ssl certbot-nginx --yes\n'
+    printf '  gas deploy preview --no-ui --app marbot-web --domain app.example.com --mode single-app\n'
     printf '  gas build --no-ui --type go --pm2-name diraaax-api --git-pull yes --yes\n'
     printf '  gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --strategy auto --git-pull no --yes\n'
     printf '  gas info\n'
@@ -401,11 +658,13 @@ print_help() {
     printf '  gas rebuild --yes\n'
     printf '  gas remove --yes\n'
     printf '  gas doctor\n'
+    printf '  gas deploy list\n'
     printf '  gas domain add app.example.com --app marbot-web --ssl yes\n'
     printf '  gas domain list\n'
     printf '\n'
     gum style --bold "Detail per command"
     printf '  gas build --help\n'
+    printf '  gas deploy --help\n'
     printf '  gas info --help\n'
     printf '  gas list --help\n'
     printf '  gas restart --help\n'
