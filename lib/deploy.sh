@@ -60,6 +60,7 @@ init_deploy_state() {
   DEPLOY_GENERATE_MAINTENANCE="no"
   DEPLOY_NOTES=""
   DEPLOY_LOCATION_SPECS=()
+  DEPLOY_LOCATION_RAW_SPECS=()
   DEPLOY_ALIAS_DOMAINS=()
   DEPLOY_ROUTE_SUMMARY=()
   DEPLOY_APPS_PROJECT=()
@@ -117,7 +118,7 @@ deploy_add_alias_domain() {
   if [[ -n "$DEPLOY_PRIMARY_DOMAIN" && "$alias_domain" == "$DEPLOY_PRIMARY_DOMAIN" ]]; then
     return 0
   fi
-  if deploy_csv_contains "$alias_domain" "${DEPLOY_ALIAS_DOMAINS[@]}"; then
+  if deploy_csv_contains "$alias_domain" "${DEPLOY_ALIAS_DOMAINS[@]-}"; then
     return 0
   fi
   DEPLOY_ALIAS_DOMAINS+=("$alias_domain")
@@ -185,12 +186,12 @@ deploy_finalize_domains() {
     fi
   fi
 
-  local extra=""
-  IFS=',' read -r -a extra <<< "${DEPLOY_ADDITIONAL_ALIASES:-}"
   local item=""
-  for item in "${extra[@]}"; do
-    deploy_add_alias_domain "$item"
-  done
+  if [[ -n "${DEPLOY_ADDITIONAL_ALIASES:-}" ]]; then
+    while IFS= read -r item; do
+      deploy_add_alias_domain "$item"
+    done < <(printf '%s\n' "$DEPLOY_ADDITIONAL_ALIASES" | tr ',' '\n')
+  fi
 
   if [[ "$DEPLOY_CANONICAL" == "custom" && "$DEPLOY_CANONICAL_HOST" != "$DEPLOY_PRIMARY_DOMAIN" ]]; then
     deploy_add_alias_domain "$DEPLOY_CANONICAL_HOST"
@@ -200,7 +201,7 @@ deploy_finalize_domains() {
 deploy_all_domains() {
   printf '%s\n' "$DEPLOY_PRIMARY_DOMAIN"
   local item=""
-  for item in "${DEPLOY_ALIAS_DOMAINS[@]}"; do
+  for item in "${DEPLOY_ALIAS_DOMAINS[@]-}"; do
     [[ -n "$item" ]] && printf '%s\n' "$item"
   done
 }
@@ -208,7 +209,7 @@ deploy_all_domains() {
 deploy_server_name_line() {
   local names=("$DEPLOY_PRIMARY_DOMAIN")
   local item=""
-  for item in "${DEPLOY_ALIAS_DOMAINS[@]}"; do
+  for item in "${DEPLOY_ALIAS_DOMAINS[@]-}"; do
     [[ -n "$item" ]] && names+=("$item")
   done
   printf '%s\n' "${names[*]}"
@@ -238,8 +239,8 @@ deploy_load_apps() {
   rows="$(query_apps_candidate_rows "$db_path")"
   [[ -n "$rows" ]] || die "Belum ada metadata app. Jalankan 'gas build' dulu."
 
-  local current_labels=()
-  local other_labels=()
+  local -a current_labels=()
+  local -a other_labels=()
   local project_dir app_type pm2_name port
   while IFS=$'\t' read -r project_dir app_type pm2_name port; do
     [[ -n "$pm2_name" ]] || continue
@@ -251,7 +252,13 @@ deploy_load_apps() {
     fi
   done <<< "$rows"
 
-  local ordered=("${current_labels[@]}" "${other_labels[@]}")
+  local -a ordered=()
+  if (( ${#current_labels[@]} > 0 )); then
+    ordered+=("${current_labels[@]}")
+  fi
+  if (( ${#other_labels[@]} > 0 )); then
+    ordered+=("${other_labels[@]}")
+  fi
   local row=""
   for row in "${ordered[@]}"; do
     IFS=$'\t' read -r project_dir app_type pm2_name port label <<< "$row"
@@ -280,7 +287,7 @@ deploy_select_app_pm2() {
 
   if (( UI_ENABLED == 1 )) && (( ASSUME_YES == 0 )); then
     local choice
-    choice="$(ui_select "$prompt" "$default_label" "${DEPLOY_APPS_LABEL[@]}")"
+    choice="$(ui_select "$prompt" "$default_label" "${DEPLOY_APPS_LABEL[@]-}")"
     local idx
     for idx in "${!DEPLOY_APPS_LABEL[@]}"; do
       if [[ "${DEPLOY_APPS_LABEL[$idx]}" == "$choice" ]]; then
@@ -418,7 +425,7 @@ deploy_parse_proxy_target() {
   die "Target proxy tidak dikenali: $target"
 }
 
-deploy_parse_location_cli() {
+deploy_materialize_location_cli() {
   local spec="$1"
   [[ "$spec" == *=* ]] || die "Format --location harus <path>=<tipe>:<target>."
 
@@ -471,6 +478,13 @@ deploy_parse_location_cli() {
       die "Tipe location tidak dikenal: $type"
       ;;
   esac
+}
+
+deploy_materialize_raw_locations() {
+  local spec=""
+  for spec in "${DEPLOY_LOCATION_RAW_SPECS[@]-}"; do
+    deploy_materialize_location_cli "$spec"
+  done
 }
 
 deploy_choose_ssl_mode() {
@@ -714,6 +728,9 @@ deploy_collect_mode_routes() {
       deploy_collect_frontend_backend
       ;;
     custom-multi-location)
+      if [[ "${DEPLOY_LOCATION_RAW_SPECS+set}" == "set" ]] && (( ${#DEPLOY_LOCATION_RAW_SPECS[@]} > 0 )); then
+        deploy_materialize_raw_locations
+      fi
       deploy_collect_custom_locations
       ;;
     static-only)
@@ -729,6 +746,10 @@ deploy_collect_mode_routes() {
       die "Mode deploy tidak dikenali: $DEPLOY_MODE"
       ;;
   esac
+
+  if [[ "$DEPLOY_MODE" != "custom-multi-location" && "${DEPLOY_LOCATION_RAW_SPECS+set}" == "set" ]] && (( ${#DEPLOY_LOCATION_RAW_SPECS[@]} > 0 )); then
+    deploy_materialize_raw_locations
+  fi
 }
 
 deploy_prompt_advanced_options() {
@@ -819,7 +840,7 @@ deploy_find_primary_from_locations() {
   fi
 
   local spec=""
-  for spec in "${DEPLOY_LOCATION_SPECS[@]}"; do
+  for spec in "${DEPLOY_LOCATION_SPECS[@]-}"; do
     IFS='|' read -r type path kind project_dir pm2_name host port extra <<< "$spec"
     if [[ "$type" == "proxy" && "$kind" == "app" ]]; then
       DEPLOY_PRIMARY_PROJECT_DIR="$project_dir"
@@ -980,7 +1001,7 @@ deploy_render_shared_server_directives() {
     deploy_line block "    }"
   else
     local spec=""
-    for spec in "${DEPLOY_LOCATION_SPECS[@]}"; do
+    for spec in "${DEPLOY_LOCATION_SPECS[@]-}"; do
       block+=$(deploy_render_location_block "$spec")
     done
   fi
@@ -1103,7 +1124,7 @@ deploy_show_preview() {
 deploy_collect_app_map() {
   local app_map=""
   local spec=""
-  for spec in "${DEPLOY_ROUTE_SUMMARY[@]}"; do
+  for spec in "${DEPLOY_ROUTE_SUMMARY[@]-}"; do
     if [[ -n "$app_map" ]]; then
       app_map+="; "
     fi
@@ -1166,7 +1187,7 @@ deploy_setup_generated_maintenance() {
 deploy_print_summary() {
   printf '\nDeploy Summary\n\n'
   print_kv_line "Domain" "$DEPLOY_PRIMARY_DOMAIN"
-  print_kv_line "Aliases" "$(deploy_array_to_csv "${DEPLOY_ALIAS_DOMAINS[@]}")"
+  print_kv_line "Aliases" "$(deploy_array_to_csv "${DEPLOY_ALIAS_DOMAINS[@]-}")"
   print_kv_line "Server" "$DEPLOY_SERVER_TYPE"
   print_kv_line "Mode" "$DEPLOY_MODE"
   print_kv_line "SSL" "$DEPLOY_SSL_MODE"
@@ -1188,15 +1209,6 @@ deploy_apply() {
   local conf_path
   conf_path="$(deploy_primary_nginx_path)"
 
-  ensure_nginx_installed
-  [[ "$DEPLOY_SERVER_TYPE" == "nginx" ]] || die "Saat ini hanya nginx yang didukung."
-
-  if nginx_site_exists "$DEPLOY_PRIMARY_DOMAIN"; then
-    deploy_confirm_overwrite "$DEPLOY_PRIMARY_DOMAIN"
-  fi
-
-  deploy_setup_generated_maintenance
-
   if [[ "$DEPLOY_PREVIEW_BEFORE_WRITE" == "yes" || "$DEPLOY_DRY_RUN" -eq 1 || "$DEPLOY_PREVIEW_ONLY" -eq 1 ]]; then
     deploy_show_preview "$config_text"
   fi
@@ -1205,6 +1217,15 @@ deploy_apply() {
     printf "Dry-run selesai. Tidak ada file nginx yang ditulis.\n"
     return 0
   fi
+
+  ensure_nginx_installed
+  [[ "$DEPLOY_SERVER_TYPE" == "nginx" ]] || die "Saat ini hanya nginx yang didukung."
+
+  if nginx_site_exists "$DEPLOY_PRIMARY_DOMAIN"; then
+    deploy_confirm_overwrite "$DEPLOY_PRIMARY_DOMAIN"
+  fi
+
+  deploy_setup_generated_maintenance
 
   local backup_path=""
   if [[ "$DEPLOY_BACKUP" == "yes" ]] && nginx_site_exists "$DEPLOY_PRIMARY_DOMAIN"; then
@@ -1239,7 +1260,7 @@ deploy_apply() {
 
   deploy_warn_certbot_requirements
   if [[ "$DEPLOY_SSL_MODE" == "certbot-nginx" ]]; then
-    local domains=()
+    local -a domains=()
     while IFS= read -r domain; do
       [[ -n "$domain" ]] && domains+=("$domain")
     done < <(deploy_all_domains)
@@ -1249,7 +1270,7 @@ deploy_apply() {
   fi
 
   local alias_csv
-  alias_csv="$(deploy_array_to_csv "${DEPLOY_ALIAS_DOMAINS[@]}")"
+  alias_csv="$(deploy_array_to_csv "${DEPLOY_ALIAS_DOMAINS[@]-}")"
   local app_map
   app_map="$(deploy_collect_app_map)"
   upsert_deployment_metadata \
@@ -1368,7 +1389,7 @@ deploy_pick_existing_domain() {
   rows="$(query_deployment_rows "$db_path")"
   [[ -n "$rows" ]] || die "Belum ada deployment yang dikelola gas."
 
-  local domains=()
+  local -a domains=()
   local domain server_type deploy_mode ssl_mode enabled updated_at pm2_name port alias_domains project_dir
   while IFS=$'\t' read -r domain server_type deploy_mode ssl_mode enabled updated_at pm2_name port alias_domains project_dir; do
     [[ -n "$domain" ]] && domains+=("$domain")
@@ -1910,11 +1931,11 @@ deploy_parse_shared_args() {
         shift
         ;;
       --location)
-        deploy_parse_location_cli "$2"
+        DEPLOY_LOCATION_RAW_SPECS+=("$2")
         shift 2
         ;;
       --location=*)
-        deploy_parse_location_cli "${1#*=}"
+        DEPLOY_LOCATION_RAW_SPECS+=("${1#*=}")
         shift
         ;;
       --notes)
