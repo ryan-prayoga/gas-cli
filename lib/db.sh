@@ -482,7 +482,11 @@ write_metadata() {
   node_version_sql="$(sql_literal "$BUILD_NODE_VERSION")"
   npm_version_sql="$(sql_literal "$BUILD_NPM_VERSION")"
   go_version_sql="$(sql_literal "$BUILD_GO_VERSION")"
-  svelte_strategy_sql="$(sql_literal "${BUILD_STRATEGY_FINAL:-$BUILD_SVELTE_STRATEGY_FINAL}")"
+  if [[ "$BUILD_TYPE" == "node-web" ]]; then
+    svelte_strategy_sql="$(sql_literal "${BUILD_STRATEGY_FINAL:-$BUILD_SVELTE_STRATEGY_FINAL}")"
+  else
+    svelte_strategy_sql="$(sql_literal "")"
+  fi
   deps_mode_sql="$(sql_literal "$BUILD_INSTALL_DEPS")"
   verify_status_sql="$(sql_literal "$BUILD_VERIFY_STATUS")"
   verify_message_sql="$(sql_literal "$BUILD_VERIFY_MESSAGE")"
