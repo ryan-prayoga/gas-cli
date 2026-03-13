@@ -164,16 +164,9 @@ show_detected_stack() {
 
 resolve_build_type() {
   if [[ -n "$BUILD_TYPE" ]]; then
-    case "$BUILD_TYPE" in
-      go) return ;;
-      svelte|sveltekit|next|nextjs|nuxt|vite|node|node-web|web)
-        BUILD_TYPE="node-web"
-        return
-        ;;
-      *)
-        die "Nilai --type tidak valid. Gunakan: go | node-web."
-        ;;
-    esac
+    BUILD_TYPE="$(normalize_build_type "$BUILD_TYPE" || true)"
+    [[ -n "$BUILD_TYPE" ]] || die "Nilai --type tidak valid. Gunakan: go | node-web."
+    return
   fi
 
   case "$BUILD_STACK_ID" in
