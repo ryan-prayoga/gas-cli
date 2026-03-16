@@ -51,3 +51,9 @@
   Owner/Agent: Codex
   Dependencies: `lib/deploy.sh`, `lib/db.sh`, `lib/help.sh`, smoke deploy preview
   Notes: Memperbaiki default `proxy_pass` preserve-path untuk backend split, menambah auto-detect backend base path best effort, dan menambah flag override route/base-path/strip-prefix.
+- ID: T-007
+  Title: Fix auto dependency install detection for local manifest changes in `--no-ui`
+  Priority: P1
+  Owner/Agent: Codex
+  Dependencies: `lib/build.sh`, shell validation
+  Notes: Menambah fingerprint manifest dependency lokal agar `package.json`/lockfile yang berubah tetap memicu auto install tanpa bergantung pada `git pull`.

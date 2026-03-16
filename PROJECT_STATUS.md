@@ -17,6 +17,7 @@
 ## Done
 - [Observed] Thin entrypoint di `bin/gas` dengan dispatcher di `lib/commands.sh`.
 - [Observed] Flow `gas build` sudah punya stack detection, PM2 strategy, runtime verify, dan metadata SQLite.
+- [Observed] Auto install dependency Node kini membandingkan fingerprint lokal `package.json` dan lockfile terhadap stamp terakhir install, jadi perubahan manifest lokal tetap terdeteksi pada mode `--no-ui` tanpa bergantung pada `git pull`.
 - [Observed] Flow `gas deploy` sudah ada beserta `preview`, `list`, `remove`, dan `doctor`.
 - [Observed] Generator deploy SSL untuk mode `frontend-backend-split` kini mempertahankan reverse proxy di blok HTTPS untuk `certbot-nginx`, dengan redirect hanya di blok HTTP.
 - [Observed] Deploy `frontend-backend-split` kini preserve path backend secara default, mendukung auto-detect backend base path best effort, dan menyediakan override eksplisit route/base-path/strip-prefix.
@@ -36,6 +37,7 @@
 
 ## Recently Touched Areas
 - [Observed] `lib/build.sh`, `lib/commands.sh`, `README.md` terkait peningkatan handling build config node-web.
+- [Observed] `lib/build.sh` terkait deteksi perubahan manifest dependency lokal untuk auto `npm install` di mode `--no-ui`.
 - [Observed] `lib/deploy.sh`, `lib/nginx.sh`, `lib/help.sh` terkait engine deploy, safety `nginx -t`, dan render SSL/certbot.
 - [Observed] `lib/deploy.sh`, `lib/db.sh`, `lib/help.sh` terkait backend split routing, heuristik backend base path, dan help deploy.
 - [Observed] `lib/pm2.sh`, `lib/db.sh`, `lib/ui.sh` terkait health check path build dan metadata terkait.

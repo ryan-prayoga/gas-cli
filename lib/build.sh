@@ -152,6 +152,52 @@ has_changed_file() {
   printf '%s\n' "$BUILD_GIT_CHANGED_FILES" | grep -Eq "(^|/)${file_name}$"
 }
 
+node_dependency_manifest_stamp_file() {
+  printf '%s\n' "$PROJECT_DIR/.gas/state/node-deps-manifest.sha256"
+}
+
+compute_node_dependency_manifest_fingerprint() {
+  [[ -f "$PROJECT_DIR/package.json" ]] || return 1
+
+  node - "$PROJECT_DIR" <<'EOF'
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+
+const projectDir = process.argv[2];
+const files = [
+  'package.json',
+  'package-lock.json',
+  'npm-shrinkwrap.json',
+  'yarn.lock',
+  'pnpm-lock.yaml',
+];
+
+const hash = crypto.createHash('sha256');
+
+for (const file of files) {
+  const fullPath = path.join(projectDir, file);
+  if (!fs.existsSync(fullPath)) continue;
+  hash.update(`FILE:${file}\n`);
+  hash.update(fs.readFileSync(fullPath));
+  hash.update('\n');
+}
+
+process.stdout.write(hash.digest('hex'));
+EOF
+}
+
+save_node_dependency_manifest_fingerprint() {
+  local fingerprint=""
+  fingerprint="$(compute_node_dependency_manifest_fingerprint || true)"
+  [[ -n "$fingerprint" ]] || return 1
+
+  local stamp_file=""
+  stamp_file="$(node_dependency_manifest_stamp_file)"
+  mkdir -p "$(dirname "$stamp_file")"
+  printf '%s\n' "$fingerprint" > "$stamp_file"
+}
+
 needs_node_install() {
   [[ -f "$PROJECT_DIR/package.json" ]] || return 1
 
@@ -165,6 +211,22 @@ needs_node_install() {
 
       if [[ ! -d "$PROJECT_DIR/node_modules" ]]; then
         return 0
+      fi
+
+      local current_fingerprint=""
+      current_fingerprint="$(compute_node_dependency_manifest_fingerprint || true)"
+      if [[ -n "$current_fingerprint" ]]; then
+        local stamp_file=""
+        stamp_file="$(node_dependency_manifest_stamp_file)"
+        if [[ ! -f "$stamp_file" ]]; then
+          return 0
+        fi
+
+        local saved_fingerprint=""
+        saved_fingerprint="$(tr -d '[:space:]' < "$stamp_file" 2>/dev/null || true)"
+        if [[ -z "$saved_fingerprint" || "$saved_fingerprint" != "$current_fingerprint" ]]; then
+          return 0
+        fi
       fi
 
       if (( BUILD_GIT_PULL_SUCCESS == 1 )) && { has_changed_file "package.json" || has_changed_file "package-lock.json" || has_changed_file "npm-shrinkwrap.json" || has_changed_file "yarn.lock" || has_changed_file "pnpm-lock.yaml"; }; then
@@ -235,6 +297,7 @@ run_dependency_install() {
       q_dir="$(to_shell_quoted "$PROJECT_DIR")"
       run_shell_step "Install dependency Node (${manager})" "cd $q_dir && $cmd" || return 1
 
+      save_node_dependency_manifest_fingerprint || true
       BUILD_NODE_DEPS_INSTALLED=1
       BUILD_INSTALL_RAN="yes"
       return 0
