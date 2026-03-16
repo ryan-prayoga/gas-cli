@@ -84,7 +84,7 @@ Mode deploy:
     Semua request diarahkan ke satu app/upstream.
 
   --mode frontend-backend-split
-    Route / ke frontend dan /api/ ke backend.
+    Route / ke frontend dan backend preserve-path default di /api/.
 
   --mode custom-multi-location
     Tambah beberapa location custom satu per satu atau via --location.
@@ -119,7 +119,19 @@ Flag penting:
     App frontend untuk route /.
 
   --backend <pm2-name>
-    App backend untuk route /api/.
+    App backend untuk route backend split.
+
+  --backend-route <path>
+    Public path prefix on Nginx that routes traffic to the backend.
+    Example: /api/
+
+  --backend-base-path <path>
+    Base path expected by the backend application.
+    Example: /api or /api/v1
+
+  --backend-strip-prefix yes|no
+    Whether the public backend route prefix should be removed before proxying to the upstream backend.
+    Default: no.
 
   --alias-domain <domain>
     Tambah alias domain lain. Bisa dipakai berulang.
@@ -214,7 +226,12 @@ Contoh:
   gas deploy
   gas deploy --no-ui --app diraaax-frontend --domain diraaax.ryannn.net --mode single-app --ssl certbot-nginx --yes
   gas deploy --no-ui --frontend diraaax-frontend --backend diraaax-backend --domain diraaax.ryannn.net --mode frontend-backend-split --uploads /home/ubuntu/projects/diraaax/backend/uploads --ssl certbot-nginx --yes
+  gas deploy --no-ui --frontend diraaax-frontend --backend diraaax-backend --domain diraaax.ryannn.net --mode frontend-backend-split --backend-route /api/ --backend-base-path / --backend-strip-prefix yes --yes
   gas deploy --no-ui --mode custom-multi-location --domain simpeg.ryannn.net --location '/=proxy:simpeg-web' --location '/api/=proxy:simpeg-api' --location '/uploads/=alias:/home/ubuntu/uploads' --ssl none --preview --yes
+
+Catatan penting:
+  - Default GAS untuk backend split adalah preserve path.
+  - Prefix stripping hanya aktif jika --backend-strip-prefix yes.
 EOF
 }
 
@@ -288,6 +305,7 @@ gas deploy preview - Generate preview config nginx tanpa apply
 Pemakaian:
   gas deploy preview --app marbot-web --domain app.example.com --mode single-app
   gas deploy preview --mode custom-multi-location --domain api.example.com --location '/=proxy:marbot-web'
+  gas deploy preview --frontend web --backend api --domain app.example.com --mode frontend-backend-split --backend-route /api/ --backend-strip-prefix no
 
 Flag tambahan:
   --save-preview <path|temp>

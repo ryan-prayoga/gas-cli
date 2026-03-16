@@ -19,6 +19,7 @@
 - [Observed] Flow `gas build` sudah punya stack detection, PM2 strategy, runtime verify, dan metadata SQLite.
 - [Observed] Flow `gas deploy` sudah ada beserta `preview`, `list`, `remove`, dan `doctor`.
 - [Observed] Generator deploy SSL untuk mode `frontend-backend-split` kini mempertahankan reverse proxy di blok HTTPS untuk `certbot-nginx`, dengan redirect hanya di blok HTTP.
+- [Observed] Deploy `frontend-backend-split` kini preserve path backend secara default, mendukung auto-detect backend base path best effort, dan menyediakan override eksplisit route/base-path/strip-prefix.
 - [Observed] Build runtime verify kini mendukung `--health-path` dan fallback ke PM2 + port check saat path tidak diatur.
 - [Observed] Smoke preview deploy tersedia di `scripts/smoke-deploy-preview.sh`.
 - [Observed] Shared context distandardkan: `AGENTS.md`, `PROJECT_STATUS.md`, `TASKS.md`, `docs/decisions.md`, `docs/handoffs/HANDOFF_TEMPLATE.md`.
@@ -36,6 +37,7 @@
 ## Recently Touched Areas
 - [Observed] `lib/build.sh`, `lib/commands.sh`, `README.md` terkait peningkatan handling build config node-web.
 - [Observed] `lib/deploy.sh`, `lib/nginx.sh`, `lib/help.sh` terkait engine deploy, safety `nginx -t`, dan render SSL/certbot.
+- [Observed] `lib/deploy.sh`, `lib/db.sh`, `lib/help.sh` terkait backend split routing, heuristik backend base path, dan help deploy.
 - [Observed] `lib/pm2.sh`, `lib/db.sh`, `lib/ui.sh` terkait health check path build dan metadata terkait.
 - [Observed] `lib/db.sh` menyimpan metadata build/deploy lintas project.
 - [Observed] `docs/*.md` ditambah untuk dokumentasi penggunaan, operasi, dan arsitektur.

@@ -97,6 +97,7 @@ gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --health-pat
 
 gas deploy --no-ui --app marbot-web --domain app.example.com --mode single-app --ssl certbot-nginx --yes
 gas deploy --no-ui --frontend diraaax-frontend --backend diraaax-backend --domain app.example.com --mode frontend-backend-split --uploads /home/ubuntu/app/uploads --ssl certbot-nginx --yes
+gas deploy --no-ui --frontend diraaax-frontend --backend diraaax-backend --domain api.example.com --mode frontend-backend-split --backend-route /api/ --backend-base-path / --backend-strip-prefix yes --yes
 gas deploy preview --no-ui --app marbot-web --domain app.example.com --mode single-app
 gas deploy list
 gas deploy remove --domain app.example.com --yes
@@ -170,6 +171,20 @@ gas deploy --no-ui \
   --yes
 ```
 
+Default mode ini preserve full request path. Prefix stripping hanya aktif jika eksplisit:
+
+```bash
+gas deploy --no-ui \
+  --frontend diraaax-frontend \
+  --backend diraaax-backend \
+  --domain diraaax.example.com \
+  --mode frontend-backend-split \
+  --backend-route /api/ \
+  --backend-base-path / \
+  --backend-strip-prefix yes \
+  --yes
+```
+
 Contoh custom multi-location:
 
 ```bash
@@ -210,6 +225,7 @@ Catatan SSL dan DNS:
 - Port 80/443 harus bisa diakses dari internet untuk challenge Let’s Encrypt.
 - `gas deploy` akan memperingatkan kalau domain belum resolve dari server saat memilih Certbot.
 - Untuk sertifikat existing, gunakan `--ssl existing-certificate --ssl-cert <path> --ssl-key <path>`.
+- Untuk `frontend-backend-split`, default `gas` adalah preserve full request path. Prefix stripping harus opt-in lewat `--backend-strip-prefix yes`.
 
 ## Catatan perilaku
 

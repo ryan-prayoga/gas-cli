@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS apps (
   app_type TEXT,
   port INTEGER,
   pm2_name TEXT,
+  health_path TEXT,
   env_file TEXT,
   start_file TEXT,
   run_mode TEXT,
@@ -47,6 +48,8 @@ INSERT OR REPLACE INTO apps (project_dir, app_type, port, pm2_name, svelte_strat
   ('/srv/apps/diraaax-backend', 'node', 4000, 'diraaax-backend', 'auto', 'auto', 'direct', '2026-03-13T10:02:00Z'),
   ('/srv/apps/simpeg-api', 'node', 5000, 'simpeg-api', 'auto', 'auto', 'direct', '2026-03-13T10:03:00Z');
 "
+
+sqlite3 "$DB_PATH" "UPDATE apps SET health_path='/api/health' WHERE pm2_name='diraaax-backend';"
 
 echo "== single-app preview =="
 HOME="$TMP_HOME" "$ROOT_DIR/bin/gas" deploy preview --no-ui \
@@ -70,6 +73,7 @@ HOME="$TMP_HOME" "$ROOT_DIR/bin/gas" deploy preview --no-ui \
   --yes | tee /tmp/gas-smoke-split.out >/dev/null
 
 grep -q "proxy_pass http://127.0.0.1:4001;" /tmp/gas-smoke-split.out
+grep -q "location /api/ {" /tmp/gas-smoke-split.out
 grep -q "proxy_pass http://127.0.0.1:4000;" /tmp/gas-smoke-split.out
 grep -q "alias /srv/apps/uploads;" /tmp/gas-smoke-split.out
 
@@ -88,6 +92,21 @@ grep -q "proxy_pass http://127.0.0.1:4001;" /tmp/gas-smoke-split-ssl.out
 grep -q "proxy_pass http://127.0.0.1:4000;" /tmp/gas-smoke-split-ssl.out
 test "$(grep -c 'return 301 https://split-ssl.example.test\$request_uri;' /tmp/gas-smoke-split-ssl.out)" -eq 2
 
+echo "== frontend-backend-split preview (strip-prefix explicit) =="
+HOME="$TMP_HOME" "$ROOT_DIR/bin/gas" deploy preview --no-ui \
+  --frontend diraaax-frontend \
+  --backend diraaax-backend \
+  --domain split-strip.example.test \
+  --mode frontend-backend-split \
+  --backend-route /api/ \
+  --backend-base-path / \
+  --backend-strip-prefix yes \
+  --ssl none \
+  --yes | tee /tmp/gas-smoke-split-strip.out >/dev/null
+
+grep -Fq 'rewrite ^/api/?(.*)$ /$1 break;' /tmp/gas-smoke-split-strip.out
+grep -q "proxy_pass http://127.0.0.1:4000;" /tmp/gas-smoke-split-strip.out
+
 echo "== custom-multi-location preview =="
 HOME="$TMP_HOME" "$ROOT_DIR/bin/gas" deploy preview --no-ui \
   --domain custom.example.test \
@@ -102,5 +121,5 @@ grep -q "proxy_pass http://127.0.0.1:3000;" /tmp/gas-smoke-custom.out
 grep -q "proxy_pass http://127.0.0.1:5000;" /tmp/gas-smoke-custom.out
 grep -q "alias /srv/public/uploads;" /tmp/gas-smoke-custom.out
 
-rm -f /tmp/gas-smoke-single-app.out /tmp/gas-smoke-split.out /tmp/gas-smoke-split-ssl.out /tmp/gas-smoke-custom.out
+rm -f /tmp/gas-smoke-single-app.out /tmp/gas-smoke-split.out /tmp/gas-smoke-split-ssl.out /tmp/gas-smoke-split-strip.out /tmp/gas-smoke-custom.out
 echo "Smoke deploy preview OK"

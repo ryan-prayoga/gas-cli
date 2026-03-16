@@ -86,6 +86,19 @@ Mode ini membuat split routing bawaan:
 
 - `/` ke frontend
 - `/api/` ke backend
+- default preserve full request path ke upstream backend
+
+Best effort auto-detect akan mencoba membaca:
+
+- metadata app `gas` seperti `health_path` bila ada
+- file environment backend untuk key seperti `API_BASE_PATH`, `BASE_PATH`, `APP_BASE_PATH`, `ROUTE_PREFIX`, `PUBLIC_API_PREFIX`
+- source code backend untuk pola prefix router seperti `Group("/api")`, `Group("/api/v1")`, atau `app.Group("/v1")`
+
+Flag eksplisit yang tersedia:
+
+- `--backend-route <path>` untuk route publik di Nginx, contoh `/api/`
+- `--backend-base-path <path>` untuk base path yang diharapkan backend, contoh `/api` atau `/api/v1`
+- `--backend-strip-prefix yes|no` untuk menghapus prefix route publik sebelum diteruskan ke upstream. Default: `no`
 
 Opsional, Anda juga bisa menambahkan static alias `/uploads/` lewat `--uploads`.
 
@@ -99,6 +112,20 @@ gas deploy --no-ui \
   --mode frontend-backend-split \
   --uploads /home/ubuntu/app/uploads \
   --ssl certbot-nginx \
+  --yes
+```
+
+Contoh explicit strip-prefix:
+
+```bash
+gas deploy --no-ui \
+  --frontend web \
+  --backend api \
+  --domain app.example.com \
+  --mode frontend-backend-split \
+  --backend-route /api/ \
+  --backend-base-path / \
+  --backend-strip-prefix yes \
   --yes
 ```
 
@@ -218,6 +245,22 @@ server {
         add_header Cache-Control "public, max-age=3600";
         try_files $uri $uri/ =404;
     }
+}
+```
+
+Jika `--backend-strip-prefix yes` dipakai, `gas` akan merender rewrite secara eksplisit sebelum proxy, misalnya:
+
+```nginx
+location /api/ {
+    rewrite ^/api/?(.*)$ /$1 break;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_pass http://127.0.0.1:4000;
 }
 ```
 

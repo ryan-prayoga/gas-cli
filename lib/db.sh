@@ -206,6 +206,23 @@ query_build_config_row() {
   "
 }
 
+query_app_deploy_hints_row() {
+  local db_path="$1"
+  local pm2_name="$2"
+  sqlite3 -cmd ".timeout 3000" -separator $'\t' "$db_path" "
+    SELECT
+      IFNULL(project_dir, ''),
+      IFNULL(pm2_name, ''),
+      IFNULL(port, ''),
+      IFNULL(health_path, ''),
+      IFNULL(env_file, '')
+    FROM apps
+    WHERE pm2_name = $(sql_literal "$pm2_name")
+    ORDER BY updated_at DESC
+    LIMIT 1;
+  "
+}
+
 query_list_rows() {
   local db_path="$1"
   sqlite3 -cmd ".timeout 3000" -separator $'\t' "$db_path" "

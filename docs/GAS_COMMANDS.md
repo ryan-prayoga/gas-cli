@@ -77,6 +77,9 @@ Options:
 - `--app <pm2-name>`
 - `--frontend <pm2-name>`
 - `--backend <pm2-name>`
+- `--backend-route <path>`
+- `--backend-base-path <path>`
+- `--backend-strip-prefix yes|no`
 - `--mode single-app|frontend-backend-split|custom-multi-location|static-only|redirect-only|maintenance`
 - `--alias-domain <domain>` repeatable
 - `--www yes|no`
@@ -131,7 +134,13 @@ Example:
 gas deploy
 gas deploy --no-ui --app web --domain app.example.com --mode single-app --ssl certbot-nginx --yes
 gas deploy --no-ui --frontend web --backend api --domain app.example.com --mode frontend-backend-split --uploads /srv/uploads --yes
+gas deploy --no-ui --frontend web --backend api --domain app.example.com --mode frontend-backend-split --backend-route /api/ --backend-base-path / --backend-strip-prefix yes --yes
 ```
+
+Catatan:
+
+- Default `frontend-backend-split` adalah preserve path.
+- Prefix stripping tidak pernah implicit; aktif hanya jika `--backend-strip-prefix yes`.
 
 ### gas deploy preview
 

@@ -53,6 +53,12 @@ init_deploy_state() {
   DEPLOY_REMOVE_TEST="yes"
   DEPLOY_UPLOADS_PATH=""
   DEPLOY_UPLOADS_CACHE=""
+  DEPLOY_BACKEND_ROUTE=""
+  DEPLOY_BACKEND_BASE_PATH=""
+  DEPLOY_BACKEND_STRIP_PREFIX="no"
+  DEPLOY_BACKEND_DETECTED_BASE_PATH=""
+  DEPLOY_BACKEND_DETECTED_SOURCE=""
+  DEPLOY_BACKEND_ROUTE_WARNING=""
   DEPLOY_STATIC_ROOT=""
   DEPLOY_REDIRECT_TARGET=""
   DEPLOY_REDIRECT_CODE="301"
@@ -85,6 +91,230 @@ deploy_lower() {
 
 deploy_trim() {
   printf '%s' "${1:-}" | awk '{ gsub(/^[[:space:]]+|[[:space:]]+$/, "", $0); print }'
+}
+
+deploy_normalize_path_prefix() {
+  local path
+  path="$(deploy_trim "$1")"
+  if [[ -z "$path" || "$path" == "/" ]]; then
+    printf '/\n'
+    return
+  fi
+  [[ "$path" == /* ]] || path="/$path"
+  path="${path%/}"
+  printf '%s\n' "$path"
+}
+
+deploy_normalize_location_prefix() {
+  local path
+  path="$(deploy_normalize_path_prefix "$1")"
+  if [[ "$path" == "/" ]]; then
+    printf '/\n'
+    return
+  fi
+  printf '%s/\n' "$path"
+}
+
+deploy_escape_regex() {
+  printf '%s' "$1" | sed 's/[][(){}.^$+*?|\\-]/\\&/g'
+}
+
+deploy_base_path_from_health_path() {
+  local health_path
+  health_path="$(deploy_normalize_path_prefix "$1")"
+  if [[ "$health_path" =~ ^/(api|v[0-9]+)(/.*)?$ ]]; then
+    local prefix="${health_path%/*}"
+    if [[ -z "$prefix" || "$prefix" == "/" ]]; then
+      printf '%s\n' "$health_path"
+    else
+      printf '%s\n' "$prefix"
+    fi
+    return
+  fi
+
+  return 1
+}
+
+deploy_parse_backend_base_path_from_env_file() {
+  local env_file="$1"
+  [[ -f "$env_file" ]] || return 1
+
+  awk '
+    BEGIN {
+      IGNORECASE = 0
+    }
+    /^[[:space:]]*#/ { next }
+    {
+      line = $0
+      sub(/^[[:space:]]*export[[:space:]]+/, "", line)
+      split(line, parts, "=")
+      key = parts[1]
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+      if (key == "API_BASE_PATH" || key == "BASE_PATH" || key == "APP_BASE_PATH" || key == "ROUTE_PREFIX" || key == "PUBLIC_API_PREFIX") {
+        sub(/^[^=]*=/, "", line)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+        gsub(/^["'"'"'"]|["'"'"'"]$/, "", line)
+        print line
+        exit
+      }
+    }
+  ' "$env_file"
+}
+
+deploy_parse_backend_base_path_from_source() {
+  local project_dir="$1"
+  [[ -d "$project_dir" ]] || return 1
+
+  local grep_cmd="grep -RhoE"
+  if command_exists rg; then
+    grep_cmd="rg -o --no-filename -e"
+  fi
+
+  local pattern='Group\("(/[^"]+)"\)|app\.Group\("(/[^"]+)"\)|router\.Group\("(/[^"]+)"\)|"/api(/[A-Za-z0-9._-]+)?"|"/v[0-9]+(/[A-Za-z0-9._-]+)?"'
+  local candidate=""
+  if [[ "$grep_cmd" == rg* ]]; then
+    candidate="$($grep_cmd "$pattern" "$project_dir" -g '*.go' -g '*.js' -g '*.ts' -g '*.jsx' -g '*.tsx' 2>/dev/null | sed -E 's/.*"(\/[^"]+)".*/\1/' | grep -E '^/(api|v[0-9]+)(/[^[:space:]"]+)?$' | head -n 1 || true)"
+  else
+    candidate="$($grep_cmd "$pattern" "$project_dir" 2>/dev/null | sed -E 's/.*"(\/[^"]+)".*/\1/' | grep -E '^/(api|v[0-9]+)(/[^[:space:]"]+)?$' | head -n 1 || true)"
+  fi
+
+  [[ -n "$candidate" ]] || return 1
+  printf '%s\n' "$(deploy_normalize_path_prefix "$candidate")"
+}
+
+deploy_detect_backend_base_path() {
+  local db_path="$1"
+  local pm2_name="$2"
+  local row=""
+  local project_dir="" port="" health_path="" env_file=""
+
+  row="$(query_app_deploy_hints_row "$db_path" "$pm2_name" 2>/dev/null || true)"
+  if [[ -n "$row" ]]; then
+    IFS=$'\t' read -r project_dir _pm2 port health_path env_file <<< "$row"
+    if [[ -n "$health_path" ]]; then
+      local from_health=""
+      from_health="$(deploy_base_path_from_health_path "$health_path")"
+      if [[ -n "$from_health" ]]; then
+        printf '%s\t%s\n' "$from_health" "metadata:health_path"
+        return 0
+      fi
+    fi
+  fi
+
+  local env_candidate=""
+  local env_path=""
+  local env_paths=()
+  if [[ -n "$env_file" ]]; then
+    env_paths+=("$env_file")
+  fi
+  if [[ -n "$project_dir" ]]; then
+    env_paths+=("$project_dir/.env" "$project_dir/.env.production" "$project_dir/.env.local" "$project_dir/.env.development")
+  fi
+  for env_path in "${env_paths[@]-}"; do
+    [[ -f "$env_path" ]] || continue
+    env_candidate="$(deploy_parse_backend_base_path_from_env_file "$env_path" || true)"
+    if [[ -n "$env_candidate" ]]; then
+      printf '%s\t%s\n' "$(deploy_normalize_path_prefix "$env_candidate")" "env:$(basename "$env_path")"
+      return 0
+    fi
+  done
+
+  local source_candidate=""
+  source_candidate="$(deploy_parse_backend_base_path_from_source "$project_dir" || true)"
+  if [[ -n "$source_candidate" ]]; then
+    printf '%s\t%s\n' "$source_candidate" "source-scan"
+    return 0
+  fi
+
+  printf '/\tfallback\n'
+}
+
+deploy_resolve_default_backend_route() {
+  local detected_base_path="$1"
+  case "$detected_base_path" in
+    /api|/api/*)
+      printf '/api/\n'
+      ;;
+    *)
+      printf '/api/\n'
+      ;;
+  esac
+}
+
+deploy_backend_proxy_uri() {
+  local host="$1"
+  local port="$2"
+  local strip_prefix="$3"
+  local base_path="$4"
+
+  if [[ "$strip_prefix" == "yes" && "$base_path" != "/" ]]; then
+    printf 'http://%s:%s%s\n' "$host" "$port" "$base_path"
+    return
+  fi
+  printf 'http://%s:%s\n' "$host" "$port"
+}
+
+deploy_build_backend_rewrite_rule() {
+  local public_route="$1"
+  local backend_base_path="$2"
+  local normalized_route normalized_base_path route_regex replacement
+
+  normalized_route="$(deploy_normalize_path_prefix "$public_route")"
+  normalized_base_path="$(deploy_normalize_path_prefix "$backend_base_path")"
+  route_regex="$(deploy_escape_regex "$normalized_route")"
+  if [[ "$normalized_base_path" == "/" ]]; then
+    replacement="/\$1"
+  else
+    replacement="${normalized_base_path}/\$1"
+  fi
+  printf '        rewrite ^%s/?(.*)$ %s break;\n' "$route_regex" "$replacement"
+}
+
+deploy_resolve_backend_route_settings() {
+  local db_path="$1"
+  local backend_project="$2"
+  local backend_pm2="$3"
+
+  local detected=""
+  detected="$(deploy_detect_backend_base_path "$db_path" "$backend_pm2")"
+  IFS=$'\t' read -r DEPLOY_BACKEND_DETECTED_BASE_PATH DEPLOY_BACKEND_DETECTED_SOURCE <<< "$detected"
+  [[ -n "$DEPLOY_BACKEND_DETECTED_BASE_PATH" ]] || DEPLOY_BACKEND_DETECTED_BASE_PATH="/"
+
+  if [[ -z "$DEPLOY_BACKEND_BASE_PATH" ]]; then
+    DEPLOY_BACKEND_BASE_PATH="$DEPLOY_BACKEND_DETECTED_BASE_PATH"
+  fi
+  DEPLOY_BACKEND_BASE_PATH="$(deploy_normalize_path_prefix "$DEPLOY_BACKEND_BASE_PATH")"
+
+  if [[ -z "$DEPLOY_BACKEND_ROUTE" ]]; then
+    DEPLOY_BACKEND_ROUTE="$(deploy_resolve_default_backend_route "$DEPLOY_BACKEND_DETECTED_BASE_PATH")"
+  fi
+  DEPLOY_BACKEND_ROUTE="$(deploy_normalize_location_prefix "$DEPLOY_BACKEND_ROUTE")"
+  DEPLOY_BACKEND_STRIP_PREFIX="$(deploy_default_bool "$DEPLOY_BACKEND_STRIP_PREFIX" "no")"
+
+  DEPLOY_BACKEND_ROUTE_WARNING=""
+  if [[ "$DEPLOY_BACKEND_STRIP_PREFIX" == "no" && "$DEPLOY_BACKEND_DETECTED_BASE_PATH" != "/" ]]; then
+    local normalized_public
+    normalized_public="$(deploy_normalize_path_prefix "$DEPLOY_BACKEND_ROUTE")"
+    if [[ "$normalized_public" != "$DEPLOY_BACKEND_DETECTED_BASE_PATH" && "$DEPLOY_BACKEND_DETECTED_BASE_PATH" != "$normalized_public"/* ]]; then
+      DEPLOY_BACKEND_ROUTE_WARNING="backend tampak memakai prefix ${DEPLOY_BACKEND_DETECTED_BASE_PATH}, pastikan route publik dan aplikasi memang selaras"
+    fi
+  fi
+
+  if (( UI_ENABLED == 1 )) && (( ASSUME_YES == 0 )); then
+    if [[ "$DEPLOY_BACKEND_DETECTED_SOURCE" != "fallback" ]]; then
+      printf '\nDetected backend base path: %s (%s)\n' "$DEPLOY_BACKEND_DETECTED_BASE_PATH" "$DEPLOY_BACKEND_DETECTED_SOURCE"
+    else
+      printf '\nCould not confidently detect backend base path, using safe default: preserve path under /api/\n'
+    fi
+    if [[ -n "$DEPLOY_BACKEND_ROUTE_WARNING" ]]; then
+      printf 'Info: %s\n' "$DEPLOY_BACKEND_ROUTE_WARNING"
+    fi
+    DEPLOY_BACKEND_ROUTE="$(deploy_normalize_location_prefix "$(ui_input "Backend public route (kosong = default: $DEPLOY_BACKEND_ROUTE)" "$DEPLOY_BACKEND_ROUTE")")"
+    DEPLOY_BACKEND_BASE_PATH="$(deploy_normalize_path_prefix "$(ui_input "Backend base path di upstream" "$DEPLOY_BACKEND_BASE_PATH")")"
+    DEPLOY_BACKEND_STRIP_PREFIX="$(ui_select "Strip backend prefix before proxy?" "$DEPLOY_BACKEND_STRIP_PREFIX" no yes)"
+  fi
+
+  [[ -n "$backend_project" ]] || backend_project=""
 }
 
 deploy_csv_contains() {
@@ -324,7 +554,7 @@ deploy_pick_default_mode() {
   if (( UI_ENABLED == 1 )) && (( ASSUME_YES == 0 )); then
     printf '\nMode deploy yang tersedia:\n'
     printf '  - single-app             Semua request / diarahkan ke satu app/upstream.\n'
-    printf '  - frontend-backend-split Route / ke frontend dan /api/ ke backend.\n'
+    printf '  - frontend-backend-split Route / ke frontend dan backend route preserve-path default di /api/.\n'
     printf '  - custom-multi-location  Tambah location block satu per satu.\n'
     printf '  - static-only            Serve file static dari root/alias.\n'
     printf '  - redirect-only          Domain ini hanya redirect ke target lain.\n'
@@ -559,6 +789,7 @@ deploy_collect_single_app() {
 }
 
 deploy_collect_frontend_backend() {
+  local db_path="$1"
   if [[ -z "$DEPLOY_FRONTEND_APP" ]]; then
     DEPLOY_FRONTEND_APP="$(deploy_select_app_pm2 "Pilih app frontend untuk /" "$DEPLOY_APP_NAME")"
   fi
@@ -573,10 +804,12 @@ deploy_collect_frontend_backend() {
   local backend_project backend_pm2 backend_port
   IFS=$'\t' read -r backend_project back_type backend_pm2 backend_port <<< "$back_row"
 
+  deploy_resolve_backend_route_settings "$db_path" "$backend_project" "$backend_pm2"
+
   deploy_add_location_spec "proxy|/|app|$DEPLOY_PRIMARY_PROJECT_DIR|$DEPLOY_PRIMARY_PM2_NAME|$DEPLOY_UPSTREAM_HOST|$DEPLOY_PRIMARY_PORT"
-  deploy_add_location_spec "proxy|/api/|app|$backend_project|$backend_pm2|$DEPLOY_UPSTREAM_HOST|$backend_port"
+  deploy_add_location_spec "proxy|$DEPLOY_BACKEND_ROUTE|app|$backend_project|$backend_pm2|$DEPLOY_UPSTREAM_HOST|$backend_port|$DEPLOY_BACKEND_BASE_PATH|$DEPLOY_BACKEND_STRIP_PREFIX"
   deploy_add_route_summary "/ -> $DEPLOY_PRIMARY_PM2_NAME ($DEPLOY_UPSTREAM_HOST:$DEPLOY_PRIMARY_PORT)"
-  deploy_add_route_summary "/api/ -> $backend_pm2 ($DEPLOY_UPSTREAM_HOST:$backend_port)"
+  deploy_add_route_summary "$DEPLOY_BACKEND_ROUTE -> $backend_pm2 ($DEPLOY_UPSTREAM_HOST:$backend_port, base:$DEPLOY_BACKEND_BASE_PATH, strip:$DEPLOY_BACKEND_STRIP_PREFIX)"
 
   if [[ -z "$DEPLOY_UPLOADS_PATH" ]] && (( UI_ENABLED == 1 )) && (( ASSUME_YES == 0 )); then
     if ui_confirm "Tambah alias /uploads/ ?" "no"; then
@@ -717,6 +950,7 @@ deploy_collect_custom_locations() {
 }
 
 deploy_collect_mode_routes() {
+  local db_path="$1"
   DEPLOY_LOCATION_SPECS=()
   DEPLOY_ROUTE_SUMMARY=()
 
@@ -725,7 +959,7 @@ deploy_collect_mode_routes() {
       deploy_collect_single_app
       ;;
     frontend-backend-split)
-      deploy_collect_frontend_backend
+      deploy_collect_frontend_backend "$db_path"
       ;;
     custom-multi-location)
       if [[ "${DEPLOY_LOCATION_RAW_SPECS+set}" == "set" ]] && (( ${#DEPLOY_LOCATION_RAW_SPECS[@]} > 0 )); then
@@ -830,7 +1064,7 @@ deploy_collect_wizard() {
   deploy_pick_default_mode
   deploy_choose_ssl_mode
   deploy_ensure_global_defaults
-  deploy_collect_mode_routes
+  deploy_collect_mode_routes "$db_path"
   deploy_prompt_advanced_options
 }
 
@@ -854,6 +1088,7 @@ deploy_find_primary_from_locations() {
 deploy_proxy_directives() {
   local host="$1"
   local port="$2"
+  local proxy_uri="${3:-http://${host}:${port}}"
   local config=""
   deploy_line config "        proxy_http_version 1.1;"
   deploy_line config "        proxy_set_header Host \$host;"
@@ -869,7 +1104,7 @@ deploy_proxy_directives() {
     deploy_line config "        proxy_send_timeout ${DEPLOY_PROXY_TIMEOUT}s;"
     deploy_line config "        proxy_read_timeout ${DEPLOY_PROXY_TIMEOUT}s;"
   fi
-  deploy_line config "        proxy_pass http://${host}:${port};"
+  deploy_line config "        proxy_pass ${proxy_uri};"
   printf '%s' "$config"
 }
 
@@ -894,14 +1129,17 @@ deploy_static_cache_directives() {
 deploy_render_location_block() {
   local spec="$1"
   local block=""
-  local type path field3 field4 field5 field6 field7
+  local type path field3 field4 field5 field6 field7 field8 field9
   local rendered_block=""
-  IFS='|' read -r type path field3 field4 field5 field6 field7 <<< "$spec"
+  IFS='|' read -r type path field3 field4 field5 field6 field7 field8 field9 <<< "$spec"
 
   case "$type" in
     proxy)
       deploy_line block "    location $path {"
-      rendered_block="$(deploy_proxy_directives "$field6" "$field7")"
+      if [[ "$field9" == "yes" ]]; then
+        block+="$(deploy_build_backend_rewrite_rule "$path" "${field8:-/}")"$'\n'
+      fi
+      rendered_block="$(deploy_proxy_directives "$field6" "$field7" "$(deploy_backend_proxy_uri "$field6" "$field7" "${field9:-no}" "${field8:-/}")")"
       [[ -n "$rendered_block" ]] && block+="${rendered_block}"$'\n'
       deploy_line block "    }"
       ;;
@@ -1240,6 +1478,11 @@ deploy_print_summary() {
   print_kv_line "Reload" "$DEPLOY_RELOAD"
   print_kv_line "Catchall" "$DEPLOY_CATCHALL"
   print_kv_line "Routes" "$(deploy_collect_app_map)"
+  if [[ "$DEPLOY_MODE" == "frontend-backend-split" ]]; then
+    print_kv_line "Backend route" "$DEPLOY_BACKEND_ROUTE"
+    print_kv_line "Backend base path" "$DEPLOY_BACKEND_BASE_PATH"
+    print_kv_line "Backend strip prefix" "$DEPLOY_BACKEND_STRIP_PREFIX"
+  fi
   if [[ -n "$DEPLOY_PRIMARY_PM2_NAME" ]]; then
     print_kv_line "PM2 name" "$DEPLOY_PRIMARY_PM2_NAME"
     print_kv_line "Port" "$DEPLOY_PRIMARY_PORT"
@@ -1676,6 +1919,30 @@ deploy_parse_shared_args() {
         ;;
       --backend=*)
         DEPLOY_BACKEND_APP="${1#*=}"
+        shift
+        ;;
+      --backend-route)
+        DEPLOY_BACKEND_ROUTE="$2"
+        shift 2
+        ;;
+      --backend-route=*)
+        DEPLOY_BACKEND_ROUTE="${1#*=}"
+        shift
+        ;;
+      --backend-base-path)
+        DEPLOY_BACKEND_BASE_PATH="$2"
+        shift 2
+        ;;
+      --backend-base-path=*)
+        DEPLOY_BACKEND_BASE_PATH="${1#*=}"
+        shift
+        ;;
+      --backend-strip-prefix)
+        DEPLOY_BACKEND_STRIP_PREFIX="$(parse_deploy_bool_arg "$2")"
+        shift 2
+        ;;
+      --backend-strip-prefix=*)
+        DEPLOY_BACKEND_STRIP_PREFIX="$(parse_deploy_bool_arg "${1#*=}")"
         shift
         ;;
       --mode)

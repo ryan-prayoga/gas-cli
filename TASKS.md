@@ -45,3 +45,9 @@
   Owner/Agent: Codex
   Dependencies: `lib/deploy.sh`, smoke preview deploy, build runtime verify
   Notes: Memastikan `certbot-nginx` untuk `frontend-backend-split` tetap menghasilkan blok HTTPS dengan reverse proxy, menambah guard `nginx -t` sebelum reload, dan menambah `gas build --health-path`.
+- ID: T-006
+  Title: Fix backend split path preservation and explicit rewrite controls
+  Priority: P1
+  Owner/Agent: Codex
+  Dependencies: `lib/deploy.sh`, `lib/db.sh`, `lib/help.sh`, smoke deploy preview
+  Notes: Memperbaiki default `proxy_pass` preserve-path untuk backend split, menambah auto-detect backend base path best effort, dan menambah flag override route/base-path/strip-prefix.
