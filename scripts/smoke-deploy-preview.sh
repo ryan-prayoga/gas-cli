@@ -73,6 +73,21 @@ grep -q "proxy_pass http://127.0.0.1:4001;" /tmp/gas-smoke-split.out
 grep -q "proxy_pass http://127.0.0.1:4000;" /tmp/gas-smoke-split.out
 grep -q "alias /srv/apps/uploads;" /tmp/gas-smoke-split.out
 
+echo "== frontend-backend-split preview (certbot-nginx) =="
+HOME="$TMP_HOME" "$ROOT_DIR/bin/gas" deploy preview --no-ui \
+  --frontend diraaax-frontend \
+  --backend diraaax-backend \
+  --domain split-ssl.example.test \
+  --mode frontend-backend-split \
+  --ssl certbot-nginx \
+  --yes | tee /tmp/gas-smoke-split-ssl.out >/dev/null
+
+grep -q "listen 443 ssl" /tmp/gas-smoke-split-ssl.out
+grep -q "ssl_certificate /etc/letsencrypt/live/split-ssl.example.test/fullchain.pem;" /tmp/gas-smoke-split-ssl.out
+grep -q "proxy_pass http://127.0.0.1:4001;" /tmp/gas-smoke-split-ssl.out
+grep -q "proxy_pass http://127.0.0.1:4000;" /tmp/gas-smoke-split-ssl.out
+test "$(grep -c 'return 301 https://split-ssl.example.test\$request_uri;' /tmp/gas-smoke-split-ssl.out)" -eq 2
+
 echo "== custom-multi-location preview =="
 HOME="$TMP_HOME" "$ROOT_DIR/bin/gas" deploy preview --no-ui \
   --domain custom.example.test \
@@ -87,5 +102,5 @@ grep -q "proxy_pass http://127.0.0.1:3000;" /tmp/gas-smoke-custom.out
 grep -q "proxy_pass http://127.0.0.1:5000;" /tmp/gas-smoke-custom.out
 grep -q "alias /srv/public/uploads;" /tmp/gas-smoke-custom.out
 
-rm -f /tmp/gas-smoke-single-app.out /tmp/gas-smoke-split.out /tmp/gas-smoke-custom.out
+rm -f /tmp/gas-smoke-single-app.out /tmp/gas-smoke-split.out /tmp/gas-smoke-split-ssl.out /tmp/gas-smoke-custom.out
 echo "Smoke deploy preview OK"

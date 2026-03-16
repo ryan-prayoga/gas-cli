@@ -808,6 +808,15 @@ parse_build_args() {
         BUILD_PM2_NAME="${1#*=}"
         shift
         ;;
+      --health-path)
+        [[ $# -ge 2 ]] || die "Flag --health-path butuh nilai."
+        BUILD_HEALTH_PATH="$2"
+        shift 2
+        ;;
+      --health-path=*)
+        BUILD_HEALTH_PATH="${1#*=}"
+        shift
+        ;;
       --git-pull)
         [[ $# -ge 2 ]] || die "Flag --git-pull butuh nilai yes|no."
         BUILD_GIT_PULL="$(normalize_yes_no "$2" || true)"
@@ -888,6 +897,10 @@ parse_build_args() {
     auto|yes|no) ;;
     *) die "Nilai --install-deps harus auto|yes|no." ;;
   esac
+
+  if [[ -n "$BUILD_HEALTH_PATH" && "$BUILD_HEALTH_PATH" != /* ]]; then
+    die "Nilai --health-path harus diawali '/'."
+  fi
 }
 
 try_load_saved_build_config() {
@@ -903,8 +916,8 @@ try_load_saved_build_config() {
     return 1
   fi
 
-  local saved_type saved_pm2 saved_port saved_strategy saved_deps saved_mode
-  IFS=$'\t' read -r saved_type saved_pm2 saved_port saved_strategy saved_deps saved_mode <<< "$row"
+  local saved_type saved_pm2 saved_port saved_strategy saved_deps saved_mode saved_health_path
+  IFS=$'\t' read -r saved_type saved_pm2 saved_port saved_strategy saved_deps saved_mode saved_health_path <<< "$row"
 
   if [[ -z "$saved_type" ]]; then
     return 1
@@ -948,6 +961,7 @@ try_load_saved_build_config() {
     [[ -n "$BUILD_PM2_NAME" ]] || BUILD_PM2_NAME="$saved_pm2"
     [[ -n "$BUILD_PORT" ]] || BUILD_PORT="$saved_port"
     [[ -n "$BUILD_INSTALL_DEPS" ]] || BUILD_INSTALL_DEPS="${saved_deps:-auto}"
+    [[ -n "$BUILD_HEALTH_PATH" ]] || BUILD_HEALTH_PATH="$saved_health_path"
     if [[ "$BUILD_TYPE" == "node-web" ]]; then
       [[ -n "$BUILD_STRATEGY" ]] || BUILD_STRATEGY="$saved_strategy"
     fi
@@ -1016,6 +1030,7 @@ print_build_plan() {
   printf '  Deps mode : %s\n' "${BUILD_INSTALL_DEPS:-auto}"
   printf '  PM2 name  : %s\n' "$BUILD_PM2_NAME"
   printf '  Port      : %s\n' "$BUILD_PORT"
+  printf '  Health    : %s\n' "${BUILD_HEALTH_PATH:--}"
   if [[ "$BUILD_TYPE" == "node-web" ]]; then
     printf '  Strategy  : %s\n' "${BUILD_STRATEGY:-auto}"
     if [[ -n "$BUILD_ECOSYSTEM_FILE" ]]; then
@@ -1063,6 +1078,7 @@ run_build() {
   BUILD_VERIFY_STATUS="not_checked"
   BUILD_VERIFY_MESSAGE="-"
   BUILD_HEALTH_STATUS="skipped"
+  BUILD_HEALTH_PATH="${BUILD_HEALTH_PATH:-}"
   BUILD_SVELTE_ECOSYSTEM_MODE="not-used"
   BUILD_INSTALL_RAN="no"
   BUILD_GIT_CHANGED_FILES=""

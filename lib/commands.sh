@@ -306,8 +306,8 @@ run_restart() {
       metadata_not_found_message
       return 1
     fi
-    local app_type port strategy deps_mode run_mode
-    IFS=$'\t' read -r app_type pm2_name port strategy deps_mode run_mode <<< "$row"
+    local app_type port strategy deps_mode run_mode health_path
+    IFS=$'\t' read -r app_type pm2_name port strategy deps_mode run_mode health_path <<< "$row"
     if [[ -z "$pm2_name" ]]; then
       die "PM2 name tidak ditemukan di metadata project ini."
     fi
@@ -341,8 +341,8 @@ run_logs() {
       metadata_not_found_message
       return 1
     fi
-    local app_type port strategy deps_mode run_mode
-    IFS=$'\t' read -r app_type pm2_name port strategy deps_mode run_mode <<< "$row"
+    local app_type port strategy deps_mode run_mode health_path
+    IFS=$'\t' read -r app_type pm2_name port strategy deps_mode run_mode health_path <<< "$row"
     if [[ -z "$pm2_name" ]]; then
       die "PM2 name tidak ditemukan di metadata project ini."
     fi
@@ -372,8 +372,8 @@ run_rebuild() {
     return 1
   fi
 
-  local app_type pm2_name port strategy deps_mode run_mode
-  IFS=$'\t' read -r app_type pm2_name port strategy deps_mode run_mode <<< "$row"
+  local app_type pm2_name port strategy deps_mode run_mode health_path
+  IFS=$'\t' read -r app_type pm2_name port strategy deps_mode run_mode health_path <<< "$row"
 
   [[ -n "$pm2_name" ]] || die "Metadata tidak valid: pm2_name kosong."
 
@@ -405,6 +405,10 @@ run_rebuild() {
 
   if [[ -n "$deps_mode" ]]; then
     args+=(--install-deps "$deps_mode")
+  fi
+
+  if [[ -n "$health_path" ]]; then
+    args+=(--health-path "$health_path")
   fi
 
   if [[ "$run_mode" == "ecosystem-reused" ]]; then
@@ -456,8 +460,8 @@ run_remove() {
     metadata_not_found_message
     return 1
   fi
-  local app_type port strategy deps_mode run_mode
-  IFS=$'\t' read -r app_type pm2_name port strategy deps_mode run_mode <<< "$row"
+  local app_type port strategy deps_mode run_mode health_path
+  IFS=$'\t' read -r app_type pm2_name port strategy deps_mode run_mode health_path <<< "$row"
   if [[ -z "$pm2_name" ]]; then
     die "PM2 name tidak ditemukan di metadata project ini."
   fi

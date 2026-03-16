@@ -23,6 +23,7 @@ Build options:
   --type go|node-web
   --port <port>
   --pm2-name <name>
+  --health-path <path>
   --git-pull yes|no
   --install-deps auto|yes|no
   --strategy auto|ecosystem|node-entry|npm-preview|npm-start
@@ -465,6 +466,7 @@ Opsi:
   --type go|node-web
   --port <port>
   --pm2-name <name>
+  --health-path <path>
   --git-pull yes|no
   --install-deps auto|yes|no
   --strategy auto|ecosystem|node-entry|npm-preview|npm-start
@@ -474,6 +476,11 @@ Opsi:
   --no-ui
   --yes
   --help
+
+Catatan health check:
+  --health-path /health
+    Jika diisi, verifikasi runtime akan curl ke path itu.
+    Jika kosong, gas fallback ke PM2 online + port listen saja.
 
 Strategy:
   ecosystem  - pakai/reuse/generate ecosystem config PM2
@@ -492,6 +499,7 @@ Contoh:
   gas build --no-ui --type go --pm2-name diraaax-api --git-pull yes --yes
   gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --strategy auto --git-pull no --yes
   gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --strategy npm-start --git-pull no --yes
+  gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --health-path /health --strategy npm-start --git-pull no --yes
   gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --strategy node-entry --git-pull no --yes
   gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --strategy ecosystem --reuse-ecosystem yes --git-pull no --yes
   gas build --install-deps auto
@@ -517,6 +525,7 @@ print_build_help() {
     printf '  --type go|node-web\n'
     printf '  --port <port>\n'
     printf '  --pm2-name <name>\n'
+    printf '  --health-path <path>\n'
     printf '  --git-pull yes|no\n'
     printf '  --install-deps auto|yes|no\n'
     printf '  --strategy auto|ecosystem|node-entry|npm-preview|npm-start\n'
@@ -527,6 +536,10 @@ print_build_help() {
     printf '  --yes\n'
     printf '  --help\n'
     printf '\n'
+    gum style --bold "Catatan health check"
+    printf '  --health-path /health\n'
+    printf '    Jika diisi, verifikasi runtime akan curl ke path itu\n'
+    printf '    Jika kosong, gas fallback ke PM2 online + port listen saja\n'
     gum style --bold "Strategy"
     printf '  ecosystem  - pakai/reuse/generate ecosystem config PM2\n'
     printf '  node-entry - jalankan entry hasil build via node\n'
@@ -544,6 +557,7 @@ print_build_help() {
     printf '  gas build --no-ui --type go --pm2-name diraaax-api --git-pull yes --yes\n'
     printf '  gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --strategy auto --git-pull no --yes\n'
     printf '  gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --strategy npm-start --git-pull no --yes\n'
+    printf '  gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --health-path /health --strategy npm-start --git-pull no --yes\n'
     printf '  gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --strategy node-entry --git-pull no --yes\n'
     printf '  gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --strategy ecosystem --reuse-ecosystem yes --git-pull no --yes\n'
     printf '  gas build --install-deps auto\n'
@@ -630,6 +644,7 @@ print_help() {
     printf '  --type go|node-web\n'
     printf '  --port <port>\n'
     printf '  --pm2-name <name>\n'
+    printf '  --health-path <path>\n'
     printf '  --git-pull yes|no\n'
     printf '  --install-deps auto|yes|no\n'
     printf '  --strategy auto|ecosystem|node-entry|npm-preview|npm-start\n'

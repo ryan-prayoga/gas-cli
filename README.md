@@ -93,6 +93,7 @@ gas list
 gas build --no-ui --type go --pm2-name diraaax-api --git-pull yes --yes
 gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --strategy auto --git-pull no --yes
 gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --strategy ecosystem --reuse-ecosystem yes --git-pull no --yes
+gas build --no-ui --type node-web --pm2-name marbot-web --port 3000 --health-path /health --strategy npm-start --git-pull no --yes
 
 gas deploy --no-ui --app marbot-web --domain app.example.com --mode single-app --ssl certbot-nginx --yes
 gas deploy --no-ui --frontend diraaax-frontend --backend diraaax-backend --domain app.example.com --mode frontend-backend-split --uploads /home/ubuntu/app/uploads --ssl certbot-nginx --yes
@@ -107,6 +108,7 @@ gas deploy doctor
 - `--type go|node-web`
 - `--port <port>`
 - `--pm2-name <name>`
+- `--health-path <path>`
 - `--git-pull yes|no`
 - `--strategy auto|ecosystem|node-entry|npm-preview|npm-start`
 - `--reuse-ecosystem yes|no`
@@ -215,6 +217,7 @@ Catatan SSL dan DNS:
 - Urutan interaktif: detect stack -> git pull -> ecosystem config -> strategy -> PM2 name/port -> summary -> execute.
 - Input kosong pada prompt akan memakai nilai default yang ditampilkan.
 - Sesudah run, dilakukan verifikasi runtime (PM2 status + port listen + HTTP localhost jika `curl` tersedia).
+- Jika `--health-path` diisi, verifikasi HTTP diarahkan ke path itu; jika kosong, fallback ke PM2 status + port listen.
 - Metadata build disimpan global di `~/.config/gas/apps.db` dengan migrasi kolom ringan.
 - Metadata deploy disimpan di tabel `deployments` dan tetap menjaga tabel `domains` untuk kompatibilitas lama.
 - `gas domain` tetap tersedia untuk kompatibilitas, tapi sekarang hanya menjadi adapter ke flow `gas deploy`.

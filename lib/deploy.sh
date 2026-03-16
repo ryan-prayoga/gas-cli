@@ -895,18 +895,21 @@ deploy_render_location_block() {
   local spec="$1"
   local block=""
   local type path field3 field4 field5 field6 field7
+  local rendered_block=""
   IFS='|' read -r type path field3 field4 field5 field6 field7 <<< "$spec"
 
   case "$type" in
     proxy)
       deploy_line block "    location $path {"
-      block+=$(deploy_proxy_directives "$field6" "$field7")
+      rendered_block="$(deploy_proxy_directives "$field6" "$field7")"
+      [[ -n "$rendered_block" ]] && block+="${rendered_block}"$'\n'
       deploy_line block "    }"
       ;;
     alias)
       deploy_line block "    location $path {"
       deploy_line block "        alias $field3;"
-      block+=$(deploy_static_cache_directives "$DEPLOY_STATIC_CACHE")
+      rendered_block="$(deploy_static_cache_directives "$DEPLOY_STATIC_CACHE")"
+      [[ -n "$rendered_block" ]] && block+="${rendered_block}"$'\n'
       if [[ "$DEPLOY_ACCESS_LOG" == "no" ]]; then
         deploy_line block "        access_log off;"
       fi
@@ -919,12 +922,14 @@ deploy_render_location_block() {
         deploy_line block "    index index.html;"
         deploy_line block "    location / {"
         deploy_line block "        try_files \$uri \$uri/ /index.html;"
-        block+=$(deploy_static_cache_directives "$DEPLOY_STATIC_CACHE")
+        rendered_block="$(deploy_static_cache_directives "$DEPLOY_STATIC_CACHE")"
+        [[ -n "$rendered_block" ]] && block+="${rendered_block}"$'\n'
         deploy_line block "    }"
       else
         deploy_line block "    location $path {"
         deploy_line block "        root $field3;"
-        block+=$(deploy_static_cache_directives "$DEPLOY_STATIC_CACHE")
+        rendered_block="$(deploy_static_cache_directives "$DEPLOY_STATIC_CACHE")"
+        [[ -n "$rendered_block" ]] && block+="${rendered_block}"$'\n'
         deploy_line block "        try_files \$uri \$uri/ =404;"
         deploy_line block "    }"
       fi
@@ -1001,8 +1006,10 @@ deploy_render_shared_server_directives() {
     deploy_line block "    }"
   else
     local spec=""
+    local rendered_block=""
     for spec in "${DEPLOY_LOCATION_SPECS[@]-}"; do
-      block+=$(deploy_render_location_block "$spec")
+      rendered_block="$(deploy_render_location_block "$spec")"
+      [[ -n "$rendered_block" ]] && block+="${rendered_block}"$'\n'
     done
   fi
 
@@ -1025,7 +1032,9 @@ deploy_render_http_server() {
     return
   fi
 
-  block+=$(deploy_render_shared_server_directives)
+  local shared_block=""
+  shared_block="$(deploy_render_shared_server_directives)"
+  [[ -n "$shared_block" ]] && block+="${shared_block}"$'\n'
   if [[ "$DEPLOY_CANONICAL" != "none" ]]; then
     deploy_line block "    if (\$host != $DEPLOY_PRIMARY_DOMAIN) {"
       deploy_line block "        return 301 \$scheme://$DEPLOY_PRIMARY_DOMAIN\$request_uri;"
@@ -1035,8 +1044,32 @@ deploy_render_http_server() {
   printf '%s' "$block"
 }
 
+deploy_certbot_ssl_live_dir() {
+  printf '/etc/letsencrypt/live/%s\n' "$DEPLOY_PRIMARY_DOMAIN"
+}
+
+deploy_render_https_server_certbot() {
+  local block=""
+  local live_dir
+  local shared_block=""
+  live_dir="$(deploy_certbot_ssl_live_dir)"
+
+  deploy_line block "server {"
+  deploy_line block "    listen 443 ssl$( [[ "$DEPLOY_HTTP2" == "yes" ]] && printf ' http2' );"
+  deploy_line block "    listen [::]:443 ssl$( [[ "$DEPLOY_HTTP2" == "yes" ]] && printf ' http2' );"
+  deploy_line block "    ssl_certificate ${live_dir}/fullchain.pem;"
+  deploy_line block "    ssl_certificate_key ${live_dir}/privkey.pem;"
+  deploy_line block "    include /etc/letsencrypt/options-ssl-nginx.conf;"
+  deploy_line block "    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;"
+  shared_block="$(deploy_render_shared_server_directives)"
+  [[ -n "$shared_block" ]] && block+="${shared_block}"$'\n'
+  deploy_line block "}"
+  printf '%s' "$block"
+}
+
 deploy_render_https_server_existing_cert() {
   local block=""
+  local shared_block=""
   deploy_line block "server {"
   deploy_line block "    listen 443 ssl$( [[ "$DEPLOY_HTTP2" == "yes" ]] && printf ' http2' );"
   deploy_line block "    listen [::]:443 ssl$( [[ "$DEPLOY_HTTP2" == "yes" ]] && printf ' http2' );"
@@ -1045,12 +1078,8 @@ deploy_render_https_server_existing_cert() {
   if [[ -n "$DEPLOY_SSL_PARAMS" ]]; then
     deploy_line block "    include $DEPLOY_SSL_PARAMS;"
   fi
-  block+=$(deploy_render_shared_server_directives)
-  if [[ "$DEPLOY_CANONICAL" != "none" ]]; then
-    deploy_line block "    if (\$host != $DEPLOY_PRIMARY_DOMAIN) {"
-    deploy_line block "        return 301 https://$DEPLOY_PRIMARY_DOMAIN\$request_uri;"
-    deploy_line block "    }"
-  fi
+  shared_block="$(deploy_render_shared_server_directives)"
+  [[ -n "$shared_block" ]] && block+="${shared_block}"$'\n'
   deploy_line block "}"
   printf '%s' "$block"
 }
@@ -1079,8 +1108,22 @@ deploy_render_config() {
     config+=$(deploy_render_https_server_existing_cert)
   elif [[ "$DEPLOY_SSL_MODE" == "certbot-nginx" ]]; then
     deploy_line config ""
-    deploy_line config "# catatan: block HTTPS akan diatur Certbot setelah issue sertifikat berhasil."
+    config+=$(deploy_render_https_server_certbot)
   fi
+  printf '%s' "$config"
+}
+
+deploy_render_certbot_bootstrap_config() {
+  local saved_ssl_mode="$DEPLOY_SSL_MODE"
+  local saved_force_https="$DEPLOY_FORCE_HTTPS"
+  local config=""
+
+  DEPLOY_SSL_MODE="none"
+  DEPLOY_FORCE_HTTPS="no"
+  config="$(deploy_render_config)"
+
+  DEPLOY_SSL_MODE="$saved_ssl_mode"
+  DEPLOY_FORCE_HTTPS="$saved_force_https"
   printf '%s' "$config"
 }
 
@@ -1203,6 +1246,45 @@ deploy_print_summary() {
   fi
 }
 
+deploy_write_primary_nginx_config() {
+  local config_text="$1"
+  local conf_path=""
+
+  conf_path="$(write_nginx_config_content "$DEPLOY_PRIMARY_DOMAIN" "$config_text")"
+  printf '[gas] Generated nginx config:\n%s\n' "$conf_path" >&2
+  enable_nginx_site "$DEPLOY_PRIMARY_DOMAIN"
+  printf '%s\n' "$conf_path"
+}
+
+deploy_test_written_config() {
+  local conf_path="$1"
+  if ! nginx_test_config; then
+    log_error "nginx -t gagal. Config baru tidak direload."
+    print_kv_line "Config file" "$conf_path"
+    return 1
+  fi
+  return 0
+}
+
+deploy_maybe_test_and_reload() {
+  local conf_path="$1"
+  local should_test="no"
+
+  if [[ "$DEPLOY_TEST_CONFIG" == "yes" || "$DEPLOY_RELOAD" == "yes" ]]; then
+    should_test="yes"
+  fi
+
+  if [[ "$should_test" == "yes" ]]; then
+    deploy_test_written_config "$conf_path" || return 1
+  fi
+
+  if [[ "$DEPLOY_RELOAD" == "yes" ]]; then
+    nginx_reload_service
+  fi
+
+  return 0
+}
+
 deploy_apply() {
   local db_path="$1"
   local config_text="$2"
@@ -1232,9 +1314,6 @@ deploy_apply() {
     backup_path="$(nginx_backup_site "$DEPLOY_PRIMARY_DOMAIN" || true)"
   fi
 
-  write_nginx_config_content "$DEPLOY_PRIMARY_DOMAIN" "$config_text" >/dev/null
-  enable_nginx_site "$DEPLOY_PRIMARY_DOMAIN"
-
   if [[ "$DEPLOY_DISABLE_DEFAULT_SITE" == "yes" ]]; then
     disable_nginx_default_site || true
   fi
@@ -1243,29 +1322,41 @@ deploy_apply() {
     write_nginx_catchall_444 "$DEPLOY_CATCHALL_HTTPS"
   fi
 
-  if [[ "$DEPLOY_TEST_CONFIG" == "yes" ]]; then
-    if ! nginx_test_config; then
-      log_error "nginx -t gagal. Config baru tidak direload."
-      print_kv_line "Config file" "$conf_path"
+  if [[ "$DEPLOY_SSL_MODE" == "certbot-nginx" ]]; then
+    local bootstrap_config=""
+    bootstrap_config="$(deploy_render_certbot_bootstrap_config)"
+    conf_path="$(deploy_write_primary_nginx_config "$bootstrap_config")"
+
+    if ! deploy_maybe_test_and_reload "$conf_path"; then
       if [[ -n "$backup_path" ]]; then
         print_kv_line "Backup" "$backup_path"
       fi
       return 1
     fi
-  fi
 
-  if [[ "$DEPLOY_RELOAD" == "yes" ]]; then
-    nginx_reload_service
-  fi
-
-  deploy_warn_certbot_requirements
-  if [[ "$DEPLOY_SSL_MODE" == "certbot-nginx" ]]; then
+    deploy_warn_certbot_requirements
     local -a domains=()
     while IFS= read -r domain; do
       [[ -n "$domain" ]] && domains+=("$domain")
     done < <(deploy_all_domains)
     if ! install_domain_ssl_certbot "${domains[@]}"; then
       log_warn "Certbot gagal. Config HTTP tetap ada, tapi SSL belum aktif."
+    else
+      conf_path="$(deploy_write_primary_nginx_config "$config_text")"
+      if ! deploy_maybe_test_and_reload "$conf_path"; then
+        if [[ -n "$backup_path" ]]; then
+          print_kv_line "Backup" "$backup_path"
+        fi
+        return 1
+      fi
+    fi
+  else
+    conf_path="$(deploy_write_primary_nginx_config "$config_text")"
+    if ! deploy_maybe_test_and_reload "$conf_path"; then
+      if [[ -n "$backup_path" ]]; then
+        print_kv_line "Backup" "$backup_path"
+      fi
+      return 1
     fi
   fi
 

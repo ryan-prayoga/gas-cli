@@ -44,8 +44,9 @@ check_port_listening() {
 
 check_http_ready() {
   local port="$1"
+  local health_path="$2"
   if command_exists curl; then
-    curl -fsS --max-time 3 "http://127.0.0.1:${port}" >/dev/null 2>&1
+    curl -fsS --max-time 3 "http://127.0.0.1:${port}${health_path}" >/dev/null 2>&1
     return $?
   fi
   return 1
@@ -63,15 +64,17 @@ verify_port_listen() {
 
 verify_http_health() {
   local port="$1"
-  if ! command_exists curl; then
+  local health_path="${2:-}"
+  if [[ -z "$health_path" ]] || ! command_exists curl; then
     return 2
   fi
-  check_http_ready "$port"
+  check_http_ready "$port" "$health_path"
 }
 
 verify_runtime() {
   local pm2_name="$1"
   local port="$2"
+  local health_path="${3:-}"
 
   BUILD_VERIFY_STATUS="failed"
   BUILD_VERIFY_MESSAGE="Runtime belum tervalidasi."
@@ -95,8 +98,8 @@ verify_runtime() {
       last_port_ok="no"
     fi
 
-    if (( has_curl == 1 )); then
-      if verify_http_health "$port"; then
+    if [[ -n "$health_path" ]] && (( has_curl == 1 )); then
+      if verify_http_health "$port" "$health_path"; then
         last_http_status="yes"
       else
         last_http_status="no"
@@ -108,13 +111,17 @@ verify_runtime() {
     if [[ "$last_pm2_status" == "online" && "$last_port_ok" == "yes" ]]; then
       if [[ "$last_http_status" == "yes" ]]; then
         BUILD_VERIFY_STATUS="online"
-        BUILD_VERIFY_MESSAGE="PM2 online, port listen, HTTP OK."
+        BUILD_VERIFY_MESSAGE="PM2 online, port listen, HTTP OK di ${health_path}."
         BUILD_HEALTH_STATUS="ok"
         return 0
       fi
       if [[ "$last_http_status" == "skipped" ]]; then
         BUILD_VERIFY_STATUS="online"
-        BUILD_VERIFY_MESSAGE="PM2 online, port listen, HTTP check dilewati (curl tidak tersedia)."
+        if [[ -n "$health_path" ]]; then
+          BUILD_VERIFY_MESSAGE="PM2 online, port listen, HTTP check dilewati (curl tidak tersedia)."
+        else
+          BUILD_VERIFY_MESSAGE="PM2 online, port listen, HTTP check dilewati (health path tidak diatur)."
+        fi
         BUILD_HEALTH_STATUS="skipped"
         return 0
       fi
@@ -124,9 +131,9 @@ verify_runtime() {
     i=$((i + 1))
   done
 
-  if [[ "$last_pm2_status" == "online" && "$last_port_ok" == "yes" && "$last_http_status" == "no" ]]; then
+  if [[ -n "$health_path" && "$last_pm2_status" == "online" && "$last_port_ok" == "yes" && "$last_http_status" == "no" ]]; then
     BUILD_VERIFY_STATUS="warning"
-    BUILD_VERIFY_MESSAGE="Service started but HTTP belum merespons di port ${port}."
+    BUILD_VERIFY_MESSAGE="Service started but HTTP belum merespons di ${health_path} pada port ${port}."
     BUILD_HEALTH_STATUS="failed"
     return 0
   fi
@@ -139,7 +146,7 @@ verify_runtime() {
 
 verify_runtime_with_feedback() {
   log_info "Verifikasi runtime..."
-  if verify_runtime "$BUILD_PM2_NAME" "$BUILD_PORT"; then
+  if verify_runtime "$BUILD_PM2_NAME" "$BUILD_PORT" "$BUILD_HEALTH_PATH"; then
     if [[ "$BUILD_VERIFY_STATUS" == "warning" ]]; then
       printf '[gas] warning: service started but not responding on port %s\n' "$BUILD_PORT" >&2
     fi

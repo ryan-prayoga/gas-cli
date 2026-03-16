@@ -29,6 +29,7 @@ ensure_metadata_db() {
       app_type TEXT,
       port INTEGER,
       pm2_name TEXT,
+      health_path TEXT,
       env_file TEXT,
       start_file TEXT,
       run_mode TEXT,
@@ -74,6 +75,7 @@ ensure_metadata_db() {
     "app_type|TEXT"
     "port|INTEGER"
     "pm2_name|TEXT"
+    "health_path|TEXT"
     "env_file|TEXT"
     "start_file|TEXT"
     "run_mode|TEXT"
@@ -196,7 +198,8 @@ query_build_config_row() {
       IFNULL(port, ''),
       IFNULL(svelte_strategy, ''),
       IFNULL(deps_mode, ''),
-      IFNULL(run_mode, '')
+      IFNULL(run_mode, ''),
+      IFNULL(health_path, '')
     FROM apps
     WHERE project_dir = $(sql_literal "$project_dir")
     LIMIT 1;
@@ -464,7 +467,7 @@ write_metadata() {
   now_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
   local project_dir_sql app_type_sql port_sql pm2_name_sql
-  local env_file_sql start_file_sql run_mode_sql
+  local health_path_sql env_file_sql start_file_sql run_mode_sql
   local node_version_sql npm_version_sql go_version_sql
   local svelte_strategy_sql deps_mode_sql verify_status_sql verify_message_sql updated_at_sql
 
@@ -476,6 +479,7 @@ write_metadata() {
   fi
   port_sql="$(sql_literal "$BUILD_PORT")"
   pm2_name_sql="$(sql_literal "$BUILD_PM2_NAME")"
+  health_path_sql="$(sql_literal "$BUILD_HEALTH_PATH")"
   env_file_sql="$(sql_literal "$BUILD_ENV_FILE")"
   start_file_sql="$(sql_literal "$BUILD_START_FILE")"
   run_mode_sql="$(sql_literal "$BUILD_RUN_MODE")"
@@ -500,6 +504,7 @@ write_metadata() {
       app_type,
       port,
       pm2_name,
+      health_path,
       env_file,
       start_file,
       run_mode,
@@ -516,6 +521,7 @@ write_metadata() {
       ${app_type_sql},
       ${port_sql},
       ${pm2_name_sql},
+      ${health_path_sql},
       ${env_file_sql},
       ${start_file_sql},
       ${run_mode_sql},
