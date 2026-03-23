@@ -238,11 +238,87 @@ run_info() {
   print_info_output_plain "$project_dir" "$app_type" "$pm2_name" "$port" "$strategy" "$deps_mode" "$updated_at" "$pm2_status"
 }
 
+list_table_terminal_width() {
+  local columns="${COLUMNS:-}"
+  if [[ "$columns" =~ ^[0-9]+$ ]] && (( columns > 0 )); then
+    printf '%s\n' "$columns"
+    return
+  fi
+
+  if [[ -t 1 ]] && command_exists tput; then
+    columns="$(tput cols 2>/dev/null || true)"
+    if [[ "$columns" =~ ^[0-9]+$ ]] && (( columns > 0 )); then
+      printf '%s\n' "$columns"
+      return
+    fi
+  fi
+
+  printf '120\n'
+}
+
 print_list_table_plain() {
   local rows="$1"
-  printf '%-20s %-12s %-6s %-20s %-50s\n' "PM2 Name" "Stack" "Port" "Updated" "Path"
-  printf '%-20s %-12s %-6s %-20s %-50s\n' "--------------------" "------------" "------" "--------------------" "--------------------------------------------------"
-  printf '%s\n' "$rows" | awk -F '\t' '
+  local terminal_width=0
+  local name_width=24
+  local stack_width=12
+  local port_width=5
+  local updated_width=16
+  local path_width=0
+
+  terminal_width="$(list_table_terminal_width)"
+  if (( terminal_width < 96 )); then
+    name_width=20
+    stack_width=10
+  elif (( terminal_width < 112 )); then
+    name_width=22
+    stack_width=11
+  fi
+
+  path_width=$((terminal_width - name_width - stack_width - port_width - updated_width - 8))
+  if (( path_width < 24 )); then
+    path_width=24
+  fi
+
+  printf '%-*s  %-*s  %*s  %-*s  %s\n' \
+    "$name_width" "PM2 Name" \
+    "$stack_width" "Stack" \
+    "$port_width" "Port" \
+    "$updated_width" "Updated" \
+    "Path"
+  printf '%s\n' "$rows" | awk -F '\t' \
+    -v name_w="$name_width" \
+    -v stack_w="$stack_width" \
+    -v port_w="$port_width" \
+    -v updated_w="$updated_width" \
+    -v path_w="$path_width" '
+    function trim_end(value, width) {
+      if (length(value) <= width) return value
+      if (width <= 3) return substr(value, 1, width)
+      return substr(value, 1, width - 3) "..."
+    }
+    function trim_path(value, width, tail, slash_index) {
+      if (length(value) <= width) return value
+      if (width <= 3) return substr(value, length(value) - width + 1)
+      tail = substr(value, length(value) - width + 4)
+      slash_index = index(tail, "/")
+      if (slash_index > 1 && slash_index < length(tail)) {
+        tail = substr(tail, slash_index)
+      }
+      if (length(tail) > width - 3) {
+        tail = substr(tail, length(tail) - (width - 3) + 1)
+      }
+      return "..." tail
+    }
+    function format_updated(value) {
+      if (value == "" || value == "-") return "-"
+      if (value ~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}/) {
+        return substr(value, 1, 10) " " substr(value, 12, 5)
+      }
+      if (value ~ /^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}/) {
+        return substr(value, 1, 16)
+      }
+      return trim_end(value, updated_w)
+    }
     {
       pm2=$1
       stack=$2
@@ -254,7 +330,12 @@ print_list_table_plain() {
       if (port == "") port="-"
       if (updated == "") updated="-"
       if (path == "") path="-"
-      printf "%-20.20s %-12.12s %-6.6s %-20.20s %-50.50s\n", pm2, stack, port, updated, path
+      updated=format_updated(updated)
+      pm2=trim_end(pm2, name_w)
+      stack=trim_end(stack, stack_w)
+      port=trim_end(port, port_w)
+      path=trim_path(path, path_w)
+      printf "%-*s  %-*s  %*s  %-*s  %s\n", name_w, pm2, stack_w, stack, port_w, port, updated_w, updated, path
     }
   '
 }
@@ -277,12 +358,9 @@ run_list() {
     return
   fi
 
-  if (( GUM_ENABLED == 1 )); then
-    {
-      printf 'PM2 Name\tStack\tPort\tUpdated\tPath\n'
-      printf '%s\n' "$rows"
-    } | gum table
-    return
+  if (( UI_ENABLED == 1 )) && (( GUM_ENABLED == 1 )); then
+    gum style --bold "Gas Apps"
+    printf '\n'
   fi
 
   print_list_table_plain "$rows"

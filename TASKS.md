@@ -57,3 +57,9 @@
   Owner/Agent: Codex
   Dependencies: `lib/build.sh`, shell validation
   Notes: Menambah fingerprint manifest dependency lokal agar `package.json`/lockfile yang berubah tetap memicu auto install tanpa bergantung pada `git pull`.
+- ID: T-008
+  Title: Tidy `gas list` table rendering for terminal output
+  Priority: P2
+  Owner/Agent: Codex
+  Dependencies: `lib/commands.sh`, shell validation, sample metadata smoke check
+  Notes: Mengganti `gum table` untuk `gas list` dengan renderer tabel statis yang lebih stabil; timestamp dipendekkan, kolom menyesuaikan lebar terminal, dan path panjang dipotong lebih informatif.

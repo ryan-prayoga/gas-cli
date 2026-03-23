@@ -19,6 +19,7 @@
 - [Observed] Flow `gas build` sudah punya stack detection, PM2 strategy, runtime verify, dan metadata SQLite.
 - [Observed] Auto install dependency Node kini membandingkan fingerprint lokal `package.json` dan lockfile terhadap stamp terakhir install, jadi perubahan manifest lokal tetap terdeteksi pada mode `--no-ui` tanpa bergantung pada `git pull`.
 - [Observed] Flow `gas deploy` sudah ada beserta `preview`, `list`, `remove`, dan `doctor`.
+- [Observed] Output `gas list` kini dirender dengan tabel statis yang lebih rapih: timestamp dipendekkan, lebar kolom adaptif ke terminal, dan path panjang dipotong lebih informatif tanpa footer interaktif `gum table`.
 - [Observed] Generator deploy SSL untuk mode `frontend-backend-split` kini mempertahankan reverse proxy di blok HTTPS untuk `certbot-nginx`, dengan redirect hanya di blok HTTP.
 - [Observed] Deploy `frontend-backend-split` kini preserve path backend secara default, mendukung auto-detect backend base path best effort, dan menyediakan override eksplisit route/base-path/strip-prefix.
 - [Observed] Build runtime verify kini mendukung `--health-path` dan fallback ke PM2 + port check saat path tidak diatur.
@@ -36,6 +37,7 @@
 - [Observed] README/help/AGENTS berpotensi drift lagi jika command surface berubah tanpa update konteks.
 
 ## Recently Touched Areas
+- [Observed] `lib/commands.sh` terkait perapihan renderer tabel `gas list` untuk mode terminal biasa maupun saat `gum` tersedia.
 - [Observed] `lib/build.sh`, `lib/commands.sh`, `README.md` terkait peningkatan handling build config node-web.
 - [Observed] `lib/build.sh` terkait deteksi perubahan manifest dependency lokal untuk auto `npm install` di mode `--no-ui`.
 - [Observed] `lib/deploy.sh`, `lib/nginx.sh`, `lib/help.sh` terkait engine deploy, safety `nginx -t`, dan render SSL/certbot.
