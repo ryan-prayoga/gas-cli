@@ -49,8 +49,11 @@ execute_git_pull_if_needed() {
   before_head="$(git rev-parse HEAD 2>/dev/null || true)"
 
   log_info "Menjalankan git pull..."
-  pull_output="$(git pull 2>&1)"
-  pull_status=$?
+  if pull_output="$(git pull 2>&1)"; then
+    pull_status=0
+  else
+    pull_status=$?
+  fi
   if [[ -n "$pull_output" ]]; then
     printf '%s\n' "$pull_output" >&2
   fi
@@ -67,8 +70,11 @@ execute_git_pull_if_needed() {
         fi
 
         log_info "Mengulang git pull setelah reset hard..."
-        pull_output="$(git pull 2>&1)"
-        pull_status=$?
+        if pull_output="$(git pull 2>&1)"; then
+          pull_status=0
+        else
+          pull_status=$?
+        fi
         if [[ -n "$pull_output" ]]; then
           printf '%s\n' "$pull_output" >&2
         fi
