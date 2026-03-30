@@ -23,6 +23,7 @@
 - [Observed] Generator deploy SSL untuk mode `frontend-backend-split` kini mempertahankan reverse proxy di blok HTTPS untuk `certbot-nginx`, dengan redirect hanya di blok HTTP.
 - [Observed] Deploy `frontend-backend-split` kini preserve path backend secara default, mendukung auto-detect backend base path best effort, dan menyediakan override eksplisit route/base-path/strip-prefix.
 - [Observed] Build runtime verify kini mendukung `--health-path` dan fallback ke PM2 + port check saat path tidak diatur.
+- [Observed] Saat `git pull` di `gas build` gagal karena local changes overwrite conflict, mode interaktif kini menawarkan opsi `git reset --hard HEAD` lalu retry pull.
 - [Observed] Smoke preview deploy tersedia di `scripts/smoke-deploy-preview.sh`.
 - [Observed] Shared context distandardkan: `AGENTS.md`, `PROJECT_STATUS.md`, `TASKS.md`, `docs/decisions.md`, `docs/handoffs/HANDOFF_TEMPLATE.md`.
 - [Observed] File `AGENTS_GAS_CONTEXT.md` ditambahkan sebagai konteks cepat portable untuk agent yang bekerja di repo pengguna `gas`.
@@ -40,6 +41,7 @@
 - [Observed] `lib/commands.sh` terkait perapihan renderer tabel `gas list` untuk mode terminal biasa maupun saat `gum` tersedia.
 - [Observed] `lib/build.sh`, `lib/commands.sh`, `README.md` terkait peningkatan handling build config node-web.
 - [Observed] `lib/build.sh` terkait deteksi perubahan manifest dependency lokal untuk auto `npm install` di mode `--no-ui`.
+- [Observed] `lib/build.sh` kini menangani konflik `git pull` akibat local changes dengan prompt reset hard opsional di mode interaktif.
 - [Observed] `lib/deploy.sh`, `lib/nginx.sh`, `lib/help.sh` terkait engine deploy, safety `nginx -t`, dan render SSL/certbot.
 - [Observed] `lib/deploy.sh`, `lib/db.sh`, `lib/help.sh` terkait backend split routing, heuristik backend base path, dan help deploy.
 - [Observed] `lib/pm2.sh`, `lib/db.sh`, `lib/ui.sh` terkait health check path build dan metadata terkait.

@@ -44,10 +44,45 @@ execute_git_pull_if_needed() {
 
   local before_head=""
   local after_head=""
+  local pull_output=""
+  local pull_status=0
   before_head="$(git rev-parse HEAD 2>/dev/null || true)"
 
   log_info "Menjalankan git pull..."
-  if ! git pull; then
+  pull_output="$(git pull 2>&1)"
+  pull_status=$?
+  if [[ -n "$pull_output" ]]; then
+    printf '%s\n' "$pull_output" >&2
+  fi
+
+  if (( pull_status != 0 )) && { [[ "$pull_output" == *"would be overwritten by merge"* ]] || [[ "$pull_output" == *"Please commit your changes or stash them before you merge."* ]]; }; then
+    log_warn "git pull gagal karena ada local changes yang konflik."
+
+    if (( UI_ENABLED == 1 )) && (( ASSUME_YES == 0 )); then
+      if ui_confirm "Jalankan git reset --hard HEAD lalu ulangi git pull? (perubahan lokal akan hilang)" "no"; then
+        log_warn "Menjalankan git reset --hard HEAD..."
+        if ! git reset --hard HEAD >/dev/null 2>&1; then
+          log_warn "git reset --hard gagal. Periksa repository secara manual."
+          return
+        fi
+
+        log_info "Mengulang git pull setelah reset hard..."
+        pull_output="$(git pull 2>&1)"
+        pull_status=$?
+        if [[ -n "$pull_output" ]]; then
+          printf '%s\n' "$pull_output" >&2
+        fi
+      else
+        log_warn "git pull dibatalkan. Perubahan lokal dipertahankan."
+        return
+      fi
+    else
+      log_warn "Jalankan commit/stash atau git reset --hard HEAD secara manual, lalu ulangi build."
+      return
+    fi
+  fi
+
+  if (( pull_status != 0 )); then
     log_warn "git pull gagal. Mungkin folder ini bukan root repo git, atau root repo ada di parent."
     return
   fi

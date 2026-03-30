@@ -63,3 +63,9 @@
   Owner/Agent: Codex
   Dependencies: `lib/commands.sh`, shell validation, sample metadata smoke check
   Notes: Mengganti `gum table` untuk `gas list` dengan renderer tabel statis yang lebih stabil; timestamp dipendekkan, kolom menyesuaikan lebar terminal, dan path panjang dipotong lebih informatif.
+- ID: T-009
+  Title: Add optional hard reset recovery when `git pull` fails on local changes
+  Priority: P1
+  Owner/Agent: Codex
+  Dependencies: `lib/build.sh`, shell validation
+  Notes: Menambah prompt interaktif untuk opsi `git reset --hard HEAD` lalu retry `git pull` saat gagal karena overwrite conflict; mode `--no-ui` tetap non-destruktif.
